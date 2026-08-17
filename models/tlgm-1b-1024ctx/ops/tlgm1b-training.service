@@ -1,0 +1,23 @@
+[Unit]
+Description=TLGM 1B 1024-context training pipeline
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=user
+Group=user
+WorkingDirectory=/home/user/minimind/tlgm_1b_1024ctx
+Environment=HOME=/home/user
+# Used only if a reboot occurs before the first progress-state file is written.
+Environment=PRETRAIN_RESUME_TOKENS=19722964208
+ExecStart=/bin/bash /home/user/minimind/tlgm_1b_1024ctx/run_tlgm_1b_full_pipeline.sh
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGINT
+TimeoutStopSec=10min
+StandardOutput=append:/home/user/minimind/tlgm_1b_1024ctx/remote_logs/tlgm1b_systemd.log
+StandardError=append:/home/user/minimind/tlgm_1b_1024ctx/remote_logs/tlgm1b_systemd.log
+
+[Install]
+WantedBy=multi-user.target

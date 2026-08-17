@@ -1,0 +1,875 @@
+TLGM-1B ARCHITECTURE IMPROVEMENT PROPOSAL
+
+Purpose: Design notes for a future smarter TLGM model
+Status: Proposal only; not yet implemented
+Prepared: 29 July 2026
+
+
+======================================================================
+1. OBJECTIVE AND HARD CONSTRAINTS
+======================================================================
+
+The objective is to make a future TLGM model substantially more capable at:
+
+  - language understanding;
+  - factual retention;
+  - long-range recall;
+  - instruction following;
+  - basic reasoning;
+  - coherent multi-paragraph generation;
+  - efficient autoregressive inference.
+
+The following constraints must remain:
+
+  - no Transformer blocks;
+  - no self-attention;
+  - no query, key, or value projections;
+  - no token-pair attention score matrix;
+  - no attention softmax;
+  - no pretrained Transformer weights;
+  - causal left-to-right generation;
+  - trainable from random initialization;
+  - practical single-workstation-GPU training.
+
+The proposed model can use:
+
+  - gated recurrent state;
+  - selective state-space scans;
+  - causal convolutions;
+  - structured sequence matrices;
+  - multilayer perceptrons;
+  - content-dependent gates;
+  - sparse feature experts;
+  - auxiliary prediction heads.
+
+
+======================================================================
+2. DIAGNOSIS OF THE CURRENT TLGM-1B
+======================================================================
+
+Current configuration:
+
+  Parameters:                1,015,592,960
+  Vocabulary:                8,192
+  Context:                   1,024
+  Embedding/model width:     2,048
+  Global blocks:             27
+  Feature hidden width:      8,192
+  Position representation:   learned absolute embeddings
+  Token mixing:              two dense causal 1,024 x 1,024 matrices
+                              per block
+  Feature mixing:            GELU MLP, 2,048 -> 8,192 -> 2,048
+  Incremental state/cache:   none
+
+Approximate parameter allocation:
+
+  Feature MLPs across 27 blocks:       906.25 million, about 89.2%
+  Causal sequence matrices:             56.68 million, about 5.6%
+  Shared input encoder:                 33.57 million, about 3.3%
+  Token and position embeddings:        18.87 million, about 1.9%
+
+The primary limitation is not insufficient parameter count. It is how the
+parameters are used.
+
+Each CausalSequenceLinear applies a learned lower-triangular position matrix:
+
+  Y[b,n,d] = bias[n] + sum(j=0..n) A[n,j] X[b,j,d]
+
+The same A matrix is used for:
+
+  - every input example;
+  - every feature channel;
+  - every token type;
+  - every semantic situation.
+
+The routing changes with absolute position but not with token content. The
+model cannot dynamically decide that one earlier token is important for the
+current query while another should be ignored. Most model capacity is then
+spent processing features after relatively weak sequence routing.
+
+Additional current limitations:
+
+  - learned absolute positions bind the model to 1,024 positions;
+  - dense sequence mixing costs O(N^2) per mixer;
+  - generation recomputes the retained sequence for every new token;
+  - no persistent recurrent state exists for incremental decoding;
+  - the very wide, shallow allocation provides only 27 sequential reasoning
+    stages;
+  - a basic GELU MLP has no content gate;
+  - the 8,192-entry tokenizer fragments many English, technical, and code
+    terms.
+
+
+======================================================================
+3. PRIORITY 1: CONTENT-SELECTIVE RECURRENT MEMORY
+======================================================================
+
+This is the highest-priority architectural improvement.
+
+Most fixed token matrices should be replaced by a causal gated state update
+whose retention and input strengths depend on the current token:
+
+  a_t = exp(-softplus(W_a x_t))
+  b_t = sigmoid(W_b x_t)
+  u_t = W_u x_t
+
+  s_t = a_t * s_(t-1) + b_t * u_t
+  y_t = W_o(s_t * SiLU(W_g x_t))
+
+Interpretation:
+
+  - a_t decides how much old state to retain;
+  - b_t decides how much current information to write;
+  - u_t is the candidate information;
+  - s_t is the persistent causal memory;
+  - W_g provides content-dependent output gating.
+
+This design has no queries, keys, values, attention scores, or attention
+softmax.
+
+Implementation requirements:
+
+  - State must be grouped or channel-wise to control parameter count.
+  - Decay values must be stable and constrained to a sensible range.
+  - Training should use an associative parallel scan where possible.
+  - Inference should use the recurrent form and cache only the current state.
+  - The parallel and recurrent forms must produce numerically equivalent
+    outputs within an appropriate tolerance.
+  - Reset state at document boundaries during isolated-document evaluation.
+  - Provide an explicit state-cache API for chat generation.
+
+Expected benefits:
+
+  - content-dependent remembering and forgetting;
+  - improved recall and induction behavior;
+  - linear sequence scaling;
+  - constant-sized incremental inference state;
+  - no complete 1,024-token recomputation for every generated token;
+  - easier extension to 4,096 or longer contexts.
+
+Research basis:
+
+  Mamba: Linear-Time Sequence Modeling with Selective State Spaces
+  https://arxiv.org/abs/2312.00752
+
+The implementation should use the selective-state principle, not copy a
+Transformer or introduce QKV under another name.
+
+
+======================================================================
+4. PRIORITY 2: MULTI-SCALE SEQUENCE PROCESSING
+======================================================================
+
+Language contains dependencies at several timescales. One sequence operation
+should not be expected to handle characters, words, clauses, and document
+memory equally well.
+
+A future TLGM block should combine:
+
+  1. Local causal depthwise convolution
+  2. Selective recurrent/state-space memory
+  3. Occasional structured global mixing
+
+4.1 Local branch
+
+Use a depthwise causal convolution with a small kernel, such as 5, 7, or 15.
+It should process every feature channel causally and efficiently.
+
+Purpose:
+
+  - spelling and subword composition;
+  - punctuation;
+  - local syntax;
+  - short phrases;
+  - numerical patterns.
+
+Different blocks can use different kernel sizes or dilation schedules.
+
+4.2 Medium- and long-range branch
+
+Use the selective recurrent state described in Section 3. It should carry
+information through the entire sequence and provide a compact inference state.
+
+4.3 Global branch
+
+Every fourth or fifth block may add a structured global mixer. It should not
+use a full dense context_length x context_length matrix at long contexts.
+
+Candidate structures:
+
+  - low-rank causal matrices;
+  - Toeplitz or convolutional causal filters;
+  - implicit Hyena-style long filters;
+  - causal Monarch matrices;
+  - hierarchical chunk-summary mixing;
+  - block-sparse lower-triangular matrices.
+
+Research references:
+
+  Hyena Hierarchy
+  https://arxiv.org/abs/2302.10866
+
+  Monarch Mixer
+  https://arxiv.org/abs/2310.12109
+
+
+======================================================================
+5. PRIORITY 3: CONTENT-ADAPTIVE TLGM MIXER BANK
+======================================================================
+
+If learned TLGM sequence matrices are retained, they should become a bank of
+structured causal routing patterns rather than one universal matrix.
+
+For K mixer bases:
+
+  candidate_k = CausalMixer_k(x)
+  gate = softmax(W_router x)
+  y = sum(k=1..K) gate_k * candidate_k
+
+The gate is calculated independently at each destination token. It selects a
+useful routing pattern based on the current hidden representation.
+
+This is not self-attention:
+
+  - it does not calculate token-pair similarity;
+  - it has no query, key, or value vectors;
+  - it has no QK transpose operation;
+  - routing choices come from a small fixed bank;
+  - all candidate mixers remain explicitly causal.
+
+Recommended initial experiment:
+
+  Mixer bases:              4
+  Gate type:                sigmoid-normalized or softmax router
+  Base structure:           low-rank or Toeplitz causal
+  Router regularization:    mild entropy/load-balancing loss
+  Placement:                every fourth or fifth block
+
+Do not use four or eight independent dense 4,096-square matrices. That would
+be unnecessarily expensive.
+
+
+======================================================================
+6. PRIORITY 4: TRADE WIDTH FOR DEPTH
+======================================================================
+
+The current design is very wide and only 27 blocks deep. A model must perform
+multiple sequential transformations to build hierarchical representations and
+multi-step computations.
+
+Recommended direction:
+
+  Current:    width 2,048, 27 blocks, hidden width 8,192
+  Proposed:   width about 1,536, about 40 blocks
+
+The exact block count and hidden width must be selected after implementing the
+new sequence branch and running an exact parameter counter.
+
+Target parameter allocation:
+
+  Feature MLPs:                  approximately 55-65%
+  Sequence/memory operations:    approximately 20-30%
+  Embeddings/output:             approximately 3-6%
+  Norms, gates, state and other: remaining parameters
+
+This is more balanced than allocating about 89% to feature MLPs.
+
+Expected benefits:
+
+  - more sequential reasoning stages;
+  - better compositional transformations;
+  - better use of a 1B parameter budget;
+  - less dependence on a single extremely wide feature operation.
+
+
+======================================================================
+7. PRIORITY 5: SWIGLU FEATURE NETWORKS
+======================================================================
+
+Replace the current GELU MLP:
+
+  y = W_down(GELU(W_up x))
+
+with a gated SwiGLU feature network:
+
+  h = SiLU(W_gate x) * W_up x
+  y = W_down h
+
+For equal model width, SwiGLU has three large projection matrices instead of
+two. Reduce the intermediate width to keep the parameter count controlled.
+
+Equivalent parameter-budget estimate:
+
+  Current GELU cost:      approximately 2 * D * H_current
+  SwiGLU cost:            approximately 3 * D * H_swiglu
+
+For D=2,048 and current H=8,192:
+
+  H_swiglu should be approximately 5,461
+
+Round to a hardware-friendly multiple such as 5,504.
+
+For the proposed D=1,536 design, an initial SwiGLU width of 3,584 to 3,712 is
+reasonable, subject to exact parameter accounting.
+
+Research reference:
+
+  GLU Variants Improve Transformer
+  https://arxiv.org/abs/2002.05202
+
+Only the gated MLP result is relevant. Using SwiGLU does not make TLGM a
+Transformer and does not require attention.
+
+
+======================================================================
+8. PRIORITY 6: REMOVE FIXED ABSOLUTE-CONTEXT DEPENDENCE
+======================================================================
+
+The current model has:
+
+  - a learned position embedding table of size context_length x D;
+  - two context_length x context_length matrices in every block.
+
+Changing context from 1,024 to 4,096 multiplies each dense sequence matrix by
+16 in parameters and arithmetic:
+
+  1,024^2 = 1,048,576
+  4,096^2 = 16,777,216
+
+Across 27 blocks and two mixers per block, dense 4,096-position mixers would
+consume approximately 906 million matrix weights by themselves. This is not a
+good 1B allocation.
+
+Recommended replacement:
+
+  - use recurrent state for long-range order;
+  - use causal convolutions for local relative position;
+  - use structured long filters for global order;
+  - optionally use a small relative phase or Fourier position feature;
+  - avoid large learned absolute position tables where possible.
+
+Target context for TLGM-V2:
+
+  Initial full training context:       2,048
+  Later context-extension stage:       4,096
+  Desired inference state:             recurrent, not full-context replay
+
+The context-extension stage must contain sufficiently long documents. Merely
+changing a configuration value does not teach long-context behavior.
+
+
+======================================================================
+9. PRIORITY 7: IMPROVE THE TOKENIZER
+======================================================================
+
+The current 8,192-entry byte-level BPE is functional but small for a 1B model
+trained on English, Wikipedia, educational material, and code.
+
+Tokenizer candidates:
+
+  - 16,384-entry byte-level BPE;
+  - 24,576-entry byte-level BPE;
+  - unigram tokenizer with byte fallback.
+
+Recommended starting point:
+
+  Vocabulary:              16,384
+  Byte fallback:           required
+  Input/output tying:      enabled
+  Normalization:           conservative; preserve code and case
+
+Evaluate each tokenizer using:
+
+  - bytes per token;
+  - characters per token;
+  - tokens per Wikipedia article;
+  - tokens per code sample;
+  - rare-word fragmentation;
+  - numerical-expression fragmentation;
+  - validation negative log-likelihood per byte;
+  - downstream accuracy after a small controlled pretraining run.
+
+A larger vocabulary requires a larger tied embedding/output matrix. With
+D=1,536 and V=16,384, that matrix contains about 25.2 million parameters,
+which remains reasonable for a 1B model.
+
+Changing the tokenizer requires a new model. Existing token embeddings and
+language-model output weights are not directly compatible.
+
+
+======================================================================
+10. PRIORITY 8: MULTI-TOKEN PREDICTION
+======================================================================
+
+Normal causal training predicts only token t+1 from the state at position t.
+Add temporary auxiliary heads that also predict t+2, t+3, and t+4.
+
+Example weighted objective:
+
+  total_loss =
+      1.000 * loss_next_1
+    + 0.500 * loss_next_2
+    + 0.250 * loss_next_3
+    + 0.125 * loss_next_4
+
+Implementation options:
+
+  - four tied output heads with small independent normalization/projections;
+  - low-rank head adapters to control memory;
+  - compute auxiliary heads only on a sampled subset of positions.
+
+The auxiliary heads can be discarded for ordinary inference.
+
+Expected benefits:
+
+  - denser training signal;
+  - improved planning representations;
+  - better sample efficiency;
+  - potentially better code and algorithmic behavior.
+
+Research reference:
+
+  Better & Faster Large Language Models via Multi-token Prediction
+  https://arxiv.org/abs/2404.19737
+
+This must be evaluated against a next-token-only control model at equal tokens
+and approximately equal training compute.
+
+
+======================================================================
+11. PRIORITY 9: MULTI-TIMESCALE HIERARCHICAL MEMORY
+======================================================================
+
+A single state timescale may forget either too quickly or too slowly.
+Introduce multiple state groups:
+
+  Fast state:      local phrases and syntax
+  Medium state:    sentences and paragraphs
+  Slow state:      document-level topic and facts
+
+Possible design:
+
+  - fast state updated at every token;
+  - medium state updated through a slower learned decay;
+  - slow state updated through a highly conservative decay;
+  - a content gate combines their outputs.
+
+An alternative is causal chunk memory:
+
+  - summarize completed 32- or 64-token chunks;
+  - update a recurrent chunk-level state;
+  - never include future tokens from the current unfinished chunk;
+  - combine prior chunk state with the local token branch.
+
+All chunk operations require causality tests. A summary must not leak future
+tokens into earlier positions.
+
+
+======================================================================
+12. TRAINING-STABILITY IMPROVEMENTS
+======================================================================
+
+These changes do not directly create intelligence, but they allow the deeper
+and more selective architecture to train reliably.
+
+Recommended:
+
+  - use BF16 on the RTX PRO 6000 instead of FP16 where supported;
+  - replace LayerNorm with RMSNorm, subject to an ablation;
+  - remove biases from large projections;
+  - use pre-normalized residual branches;
+  - add a small learnable LayerScale coefficient to every residual branch;
+  - scale residual output initialization according to total depth;
+  - exclude normalization and bias parameters from weight decay;
+  - retain global gradient clipping;
+  - log gradient norm, activation RMS, state decay statistics and gate
+    saturation;
+  - detect NaN/Inf before optimizer updates;
+  - maintain validation evaluation every fixed number of optimizer steps;
+  - save exact sampler, optimizer, scheduler, scaler and RNG state.
+
+Suggested initial LayerScale:
+
+  alpha = 1 / sqrt(number_of_blocks)
+
+or a small learned value such as 0.01, to be validated experimentally.
+
+Monitor selective-state behavior:
+
+  - mean and quantiles of retention a_t;
+  - write-gate b_t saturation;
+  - state RMS by layer;
+  - percentage of near-zero or near-one gates;
+  - recurrent versus parallel-scan numerical error.
+
+
+======================================================================
+13. OPTIONAL: SPARSE FEATURE EXPERTS
+======================================================================
+
+Sparse mixture-of-experts feature MLPs are compatible with the no-attention
+constraint, but they are not a first-priority change.
+
+Possible later experiment:
+
+  - replace every fifth SwiGLU MLP with four experts;
+  - route each token to one or two experts;
+  - include load-balancing and router-stability losses;
+  - keep active computation close to the dense baseline.
+
+Advantages:
+
+  - greater parameter capacity at similar active FLOPs;
+  - possible specialization for code, facts, dialogue, and mathematics.
+
+Risks:
+
+  - expert collapse;
+  - uneven utilization;
+  - more checkpoint storage;
+  - more complicated single-GPU execution;
+  - difficult fair comparison;
+  - insufficient data per expert at only 20B tokens.
+
+Do not add MoE until the dense selective-state TLGM-V2 is stable and proven.
+
+
+======================================================================
+14. PROPOSED TLGM-V2 BLOCK
+======================================================================
+
+Conceptual block:
+
+  x
+  |
+  +-- RMSNorm
+  |    |
+  |    +-- input projection
+  |    +-- depthwise causal convolution
+  |    +-- selective recurrent/state-space scan
+  |    +-- content gate
+  |    +-- output projection
+  |    |
+  |    +-- LayerScale
+  |
+  +-- residual add
+  |
+  +-- RMSNorm
+  |    |
+  |    +-- SwiGLU feature network
+  |    +-- LayerScale
+  |
+  +-- residual add
+  |
+  output
+
+Every fourth or fifth block:
+
+  - add an adaptive structured TLGM global mixer in parallel with the
+    selective-state branch;
+  - combine branches through learned content gates;
+  - initialize the global branch with a small residual scale.
+
+Example equations:
+
+  n = RMSNorm(x)
+
+  local = DepthwiseCausalConv(W_v n)
+  memory, new_state = SelectiveScan(local, old_state, parameters_from=n)
+  sequence_output = W_o(memory * SiLU(W_g n))
+  x = x + alpha_sequence * sequence_output
+
+  n = RMSNorm(x)
+  feature_output = W_down(SiLU(W_gate n) * W_up n)
+  x = x + alpha_feature * feature_output
+
+There is no self-attention or QKV anywhere in this block.
+
+
+======================================================================
+15. PROVISIONAL TLGM-V2 1B CONFIGURATION
+======================================================================
+
+This is a design target, not a final exact configuration:
+
+  Vocabulary:                      16,384
+  Model/embedding width:           1,536
+  Blocks:                          approximately 40
+  SwiGLU hidden width:             3,584 to 3,712
+  Initial training context:        2,048
+  Extended context:                4,096
+  Local convolution kernel:        7 initially
+  Selective state groups:          implementation-dependent
+  State size per group:            test 32, 64 and 128
+  Structured global mixer:         every fifth block
+  Mixer bases:                     4 initially
+  Normalization:                   RMSNorm
+  Residual scaling:                learnable LayerScale
+  Dropout:                         0.0 initially
+  Weight tying:                    enabled
+  Training dtype:                  BF16
+  Objective:                       causal LM plus optional 4-token prediction
+
+The exact parameter count must be computed from the implemented modules.
+Adjust the SwiGLU hidden width and possibly block count until the unique
+trainable parameter count is near the intended target.
+
+Suggested acceptable 1B range:
+
+  980 million to 1.05 billion unique trainable parameters
+
+
+======================================================================
+16. CHECKPOINT COMPATIBILITY AND MIGRATION
+======================================================================
+
+These changes alter:
+
+  - tokenizer vocabulary;
+  - model width;
+  - block count;
+  - feature MLP shape;
+  - normalization type;
+  - sequence-mixing mechanism;
+  - positional representation;
+  - inference state.
+
+Therefore, the recommended TLGM-V2 cannot directly resume the current
+TLGM-1B optimizer checkpoint.
+
+Preferred approach:
+
+  - preserve the current TLGM-1B as the baseline;
+  - create TLGM-V2 in a separate project folder;
+  - train TLGM-V2 from random initialization;
+  - use identical data and evaluation splits for comparison.
+
+Possible checkpoint-surgery experiment:
+
+  - retain D=2,048 and the existing tokenizer;
+  - add selective-state branches in parallel;
+  - initialize each new branch output scale to zero;
+  - load all compatible old weights;
+  - train new branches briefly while old weights are frozen;
+  - unfreeze the complete model and continue pretraining.
+
+Checkpoint surgery may preserve some learned knowledge, but it produces a less
+clean architecture and a less controlled experiment. It should not replace a
+fresh TLGM-V2 run if scientific comparison is important.
+
+
+======================================================================
+17. REQUIRED ABLATION PROGRAM
+======================================================================
+
+Do not immediately spend another full 20B-token 1B-model run.
+
+First construct approximately 120M or 250M versions and run controlled
+experiments. All runs must use:
+
+  - the same tokenizer for that ablation group;
+  - the same exact training documents;
+  - the same token budget;
+  - the same validation split;
+  - approximately matched parameter counts;
+  - reported training FLOPs and elapsed GPU time;
+  - identical evaluation scripts.
+
+Recommended ablation sequence:
+
+  A. Existing TLGM baseline
+  B. Baseline plus SwiGLU
+  C. Deeper/narrower plus SwiGLU
+  D. Selective state replacing fixed mixers
+  E. Selective state plus local convolution
+  F. Add occasional adaptive structured global mixer
+  G. Add multi-token prediction
+  H. Test 8K versus 16K tokenizer
+
+Suggested small-run budget:
+
+  Parameters:              120M to 250M
+  Tokens per serious run:  500M to 1B
+  Context:                 1,024 initially
+  Seeds:                   at least two for finalists
+
+Do not select an architecture from final training loss alone.
+
+
+======================================================================
+18. EVALUATION AND ACCEPTANCE CRITERIA
+======================================================================
+
+18.1 Language modeling
+
+  - held-out cross-entropy;
+  - perplexity;
+  - loss per byte;
+  - validation by dataset source;
+  - rare-token and long-document loss.
+
+18.2 Memory and sequence capability
+
+  - associative recall;
+  - repeated-token induction;
+  - copy tasks at multiple distances;
+  - passkey retrieval;
+  - variable-length document recall;
+  - distractor resistance;
+  - state reset and document-boundary tests.
+
+18.3 Practical capability
+
+  - greetings and instruction following;
+  - elementary arithmetic;
+  - factual questions;
+  - commonsense completion;
+  - short explanations;
+  - story coherence;
+  - code completion;
+  - uncertainty behavior;
+  - repetition and answer-substitution rate.
+
+18.4 Efficiency
+
+  - training tokens per second;
+  - GPU time to a fixed validation loss;
+  - peak allocated and reserved VRAM;
+  - prefill latency;
+  - generation tokens per second;
+  - state-cache memory;
+  - throughput at contexts 128, 512, 1,024, 2,048 and 4,096.
+
+18.5 Correctness
+
+  - strict causal prefix invariance;
+  - no future-token leakage;
+  - parallel scan equals recurrent scan;
+  - resumed training equals uninterrupted training within tolerance;
+  - EOS behavior;
+  - context truncation;
+  - deterministic greedy generation;
+  - finite gradients and activations.
+
+Minimum recommendation for accepting TLGM-V2:
+
+  - lower held-out loss than the current TLGM at matched tokens and compute;
+  - clearly better associative recall;
+  - no causal leakage;
+  - stable training at the target depth;
+  - faster incremental generation using recurrent state;
+  - no unacceptable regression in local syntax or short generation.
+
+
+======================================================================
+19. DATA AND TRAINING-BUDGET GUIDANCE
+======================================================================
+
+Architecture changes alone cannot make a weakly trained model intelligent.
+
+For the final approximately 1B TLGM-V2:
+
+  Initial pretraining target:       20B high-quality tokens
+  Preferred target if affordable:  30B to 40B high-quality tokens
+  Long-context continuation:       2B to 5B tokens at 4,096 context
+  SFT:                             quality-controlled, diverse and deduplicated
+
+Data priorities:
+
+  - high-quality educational text;
+  - encyclopedic knowledge;
+  - textbooks and explanations where licensing permits;
+  - strong code examples;
+  - mathematics with verified answers;
+  - diverse prose and dialogue;
+  - explicit uncertainty examples;
+  - long documents for state-memory training.
+
+Avoid excessive repetition of narrow repair data. Near-zero loss on a small
+polish set usually means memorization, not general intelligence.
+
+SFT can improve response format and behavior, but it cannot substitute for
+pretraining knowledge or repair a sequence architecture that cannot retrieve
+relevant context.
+
+
+======================================================================
+20. CHANGES THAT SHOULD NOT BE PRIORITIZED
+======================================================================
+
+Do not rely on the following as primary solutions:
+
+  - simply widening the existing 2,048-wide MLP;
+  - adding more identical static dense token matrices;
+  - extending dense matrices directly from 1,024 to 4,096;
+  - increasing SFT repetition until loss approaches zero;
+  - increasing parameter count without improving routing;
+  - judging different tokenizers by raw cross-entropy alone;
+  - claiming intelligence improvements from training loss only;
+  - modifying the active baseline without preserving its reproducible
+    checkpoint and configuration.
+
+
+======================================================================
+21. RECOMMENDED IMPLEMENTATION ORDER
+======================================================================
+
+Phase 1: Core prototype
+
+  1. Implement a causal selective-state branch.
+  2. Implement recurrent inference state.
+  3. Test recurrent/parallel equivalence.
+  4. Add a depthwise causal convolution.
+  5. Replace GELU MLP with SwiGLU.
+  6. Add RMSNorm and LayerScale.
+
+Phase 2: Small-model ablation
+
+  1. Build a parameter-matched 120M baseline and TLGM-V2.
+  2. Train both on the same 500M to 1B tokens.
+  3. Run language-loss, recall, passkey and speed benchmarks.
+  4. Tune depth, state size, convolution kernel and residual scale.
+
+Phase 3: Global routing
+
+  1. Implement a structured mixer bank.
+  2. Insert it every fifth block.
+  3. Compare no-global-mixer, fixed mixer and adaptive mixer variants.
+
+Phase 4: Tokenizer and objective
+
+  1. Compare 8K and 16K tokenizers.
+  2. Add multi-token prediction.
+  3. Select using matched-compute evaluation.
+
+Phase 5: Final 1B model
+
+  1. Freeze the final architecture specification.
+  2. Write an exact parameter and FLOP report.
+  3. Train from random initialization.
+  4. Run 20B-token pretraining.
+  5. Continue at 4,096 context if validation supports it.
+  6. Perform controlled SFT and preference training.
+  7. Run the full practical benchmark pipeline.
+
+
+======================================================================
+22. FINAL RECOMMENDATION
+======================================================================
+
+The strongest practical design is not a larger version of the current static
+TLGM mixer. It is a deeper TLGM-V2 that combines:
+
+  - content-selective recurrent memory;
+  - local causal convolution;
+  - occasional adaptive structured global mixing;
+  - SwiGLU feature processing;
+  - RMSNorm and stable residual scaling;
+  - a 16K tokenizer;
+  - multi-token prediction;
+  - recurrent-state inference;
+  - 2K initial and 4K extended context training.
+
+This architecture remains fully non-Transformer and contains no QKV. It
+directly addresses the current model's main weakness: fixed,
+content-independent cross-token routing.

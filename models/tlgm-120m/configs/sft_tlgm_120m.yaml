@@ -1,0 +1,37 @@
+model:
+  vocab_size: 8192
+  context_length: 256
+  embed_dim: 768
+  model_dim: 768
+  num_global_blocks: 22
+  local_hidden_dim: 3072
+  feature_hidden_dim: 3072
+  dropout: 0.0
+  pad_token_id: 0
+  bos_token_id: 1
+  eos_token_id: 2
+  unk_token_id: 3
+  tie_embeddings: true
+
+data:
+  train_bin: data/processed/sft_tokens.bin
+  meta: data/processed/sft_tokens_meta.json
+
+init_checkpoint: checkpoints/tlgm_120m_pretrain.pth
+checkpoint_path: checkpoints/tlgm_120m_sft.pth
+log_path: outputs/tlgm_sft_loss.jsonl
+tensorboard_dir: outputs/tensorboard_sft
+
+training:
+  device: cuda
+  dtype: float16
+  batch_size: 8
+  gradient_accumulation_steps: 16
+  learning_rate: 0.00002
+  weight_decay: 0.01
+  max_steps: 5000
+  warmup_steps: 300
+  save_steps: 500
+  grad_clip: 1.0
+  num_workers: 2
+  seed: 121

@@ -1,0 +1,45 @@
+model:
+  vocab_size: 8192
+  context_length: 1024
+  embed_dim: 2048
+  model_dim: 2048
+  num_global_blocks: 27
+  local_hidden_dim: 8192
+  feature_hidden_dim: 8192
+  dropout: 0.0
+  pad_token_id: 0
+  bos_token_id: 1
+  eos_token_id: 2
+  unk_token_id: 3
+  tie_embeddings: true
+  initializer_range: 0.02
+  scale_residual_projections: true
+
+data:
+  sft_jsonl: data/processed/sft_polish.jsonl
+  tokenizer_dir: tokenizer
+
+init_checkpoint: checkpoints/tlgm_1b_1024ctx_sft_repair.pth
+checkpoint_path: checkpoints/tlgm_1b_1024ctx_sft_final.pth
+log_path: outputs/tlgm_1b_1024ctx_sft_polish_loss.jsonl
+tensorboard_dir: outputs/tensorboard_sft_polish
+
+validation:
+  enabled: true
+  holdout_samples: 700
+  eval_steps: 100
+  eval_batches: 16
+
+training:
+  device: cuda
+  dtype: float16
+  batch_size: 4
+  gradient_accumulation_steps: 16
+  learning_rate: 0.0000005
+  weight_decay: 0.01
+  max_steps: 800
+  warmup_steps: 80
+  save_steps: 100
+  grad_clip: 1.0
+  num_workers: 0
+  seed: 1004

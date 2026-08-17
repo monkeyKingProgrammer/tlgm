@@ -1,0 +1,1313 @@
+TLGM-1B-1024 COMPLETE TECHNICAL AUDIT AND MODEL REPORT
+======================================================
+
+Report date: 2026-08-12
+Live measurement snapshot: 2026-08-12 12:50-12:54 UTC+08:00
+Project directory: /home/user/minimind/tlgm_1b_1024ctx
+Local mirror: C:\Users\ADMIN\minimind\tlgm_1b_1024ctx
+Audit scope: architecture, tokenizer, data, training, checkpoints, inference,
+evaluation, operations, measured performance, and external 1B-class comparison.
+
+
+1. EXECUTIVE VERDICT
+====================
+
+TLGM-1B-1024 is a real, independently implemented, decoder-only causal
+language model trained from random initialization. It contains no attention,
+QKV projections, Transformer blocks, recurrent state, convolution, state-space
+layer, imported model weights, or KV cache. The completed base model has
+1,015,592,960 registered parameters, a 1,024-token context, an 8,192-entry
+byte-level BPE vocabulary, and 27 global mixing blocks.
+
+The corrected production pretraining run completed successfully. It processed
+20,000,014,336 input token positions, corresponding to 19,980,483,072 actual
+next-token targets, in 231.70 measured GPU hours. Broad chat SFT, repair SFT,
+and polish SFT also completed. A new large reasoning continuation is currently
+running from the completed chat checkpoint.
+
+The model and trainer pass all 14 current automated tests. The audit found no
+remaining double-shift error, no observed future-token leakage, no parameter
+shape mismatch, and no evidence that the active process loaded the wrong base
+checkpoint.
+
+However, the project is not production-ready. Several silent issues can reduce
+quality or operational reliability without throwing an exception:
+
+  * overlength multi-turn SFT records retain the first assistant response and
+    can discard all later turns;
+  * overlength math solutions retain their reasoning beginning but commonly
+    lose the final answer and EOS target;
+  * every resumable checkpoint stores model weights as FP16 even though the
+    live optimizer maintains FP32 master parameters and the current stage uses
+    BF16 autocast;
+  * the active reasoning run is a nohup background process, while the installed
+    systemd service is inactive and still points to the old full pipeline;
+  * 28,283,904 registered parameters are permanently masked upper-triangular
+    entries that never affect a forward pass;
+  * validation and token-accounting labels can be misunderstood;
+  * dataset revisions, hashes, cross-source deduplication, and benchmark
+    decontamination are incomplete.
+
+The completed pre-reasoning benchmark is useful as an internal baseline. It is
+not directly interchangeable with official Open LLM Leaderboard numbers because
+the prompting and scoring protocols differ. On comparable commonsense tasks,
+TLGM is materially behind established Transformer models around 1B parameters.
+The largest reason is training-data scale: TLGM used 20B pretraining token
+positions, versus 300B for Pythia-1B, 3T for TinyLlama-1.1B, up to 9T for
+Llama-3.2-1B, and 11T for SmolLM2-1.7B. Architecture and post-training quality
+also matter; token count alone does not explain the entire gap.
+
+
+2. AUDIT METHOD AND EVIDENCE
+============================
+
+The audit used the following evidence:
+
+  * direct source review of every model, dataset, trainer, generation, data
+    preparation, and benchmark module;
+  * all YAML training and benchmark configurations;
+  * current remote process, GPU, RAM, disk, checkpoint, and service state;
+  * checkpoint JSON sidecars and machine-readable JSONL loss logs;
+  * the completed 20B-token data manifest and reasoning-data manifest;
+  * complete 20,110-question benchmark output, including per-task predictions;
+  * local and remote pytest runs: 14 passed on both machines;
+  * official upstream dataset cards and official model cards/project papers.
+
+No destructive operation was performed. The active training process was not
+stopped or modified during this audit.
+
+
+3. SEVERITY-RANKED CODE AND PIPELINE FINDINGS
+=============================================
+
+3.1 HIGH: Overlength multi-turn SFT loses later turns
+-----------------------------------------------------
+
+Evidence:
+  tlgm/dataset.py:148-161
+
+The truncation code finds the first supervised assistant token in the entire
+conversation. If the flattened conversation exceeds 1,024 tokens, it keeps a
+limited prompt region before that first assistant response and then keeps the
+beginning of supervised text from that point. It does not preferentially keep
+the latest user turn or latest assistant turn.
+
+Impact:
+
+  * long UltraChat conversations can train only their first response;
+  * later conversation turns, follow-up questions, corrections, and contextual
+    behavior can be discarded;
+  * the dataset may report one multi-turn example while the effective training
+    sample contains only its earliest exchange.
+
+Recommended correction:
+
+  Split each conversation into one training sample per assistant turn. For each
+  target assistant turn, retain as much immediately preceding dialogue as fits,
+  mask all prompt tokens, and supervise that one response plus EOS. This gives
+  explicit coverage to every assistant turn and avoids ambiguous truncation.
+
+This correction changes the SFT sample stream but not model shapes. It should be
+implemented before a future SFT run, not injected into the currently running
+process.
+
+
+3.2 HIGH: Long math traces often lose the final answer and EOS
+--------------------------------------------------------------
+
+Evidence:
+  tlgm/dataset.py:148-161
+  scripts/prepare_reasoning_sft.py:58-67
+
+For a one-turn math record longer than context, the loader now preserves the
+question tail and beginning of the solution. This is better than preserving an
+orphaned solution tail, but the final answer and EOS are omitted when the
+solution exceeds the remaining budget.
+
+This is especially important for OpenR1-Math-220k. Its official card says
+solutions were generated with limits as high as 16K tokens. A 1,024-token model
+cannot consume many of these traces in full.
+
+Impact:
+
+  * the model learns how to begin long reasoning but not necessarily how to
+    terminate it or state the verified result;
+  * EOS training is absent on truncated samples;
+  * long DeepSeek-R1 traces can consume substantial training weight while only
+    a small prefix is usable;
+  * the nominal example count overstates complete answer coverage.
+
+Recommended correction:
+
+  Filter or transform before training. Prefer verified solutions that fit the
+  model context. For long records, create a compact target containing a concise
+  rationale and the verified final answer. At minimum, reserve a tail budget for
+  the boxed/final answer and EOS while preserving a reasoning prefix. Record
+  exact truncation statistics in the manifest.
+
+
+3.3 HIGH: Checkpoint resumes quantize FP32 master weights through FP16
+---------------------------------------------------------------------
+
+Evidence:
+  tlgm/trainer.py:115-136
+  tlgm/trainer.py:194-213
+
+The model is created in FP32 and moved to CUDA. Autocast controls operation
+precision, but does not convert the persistent model parameters. The optimizer
+therefore updates FP32 master parameters. Checkpoint saving explicitly converts
+every model tensor to FP16:
+
+  v.detach().half().cpu()
+
+On resume or stage transition, those FP16 values are copied back into FP32
+parameters. The lost mantissa precision cannot be recovered. The current BF16
+reasoning stage also stores its best model as FP16, not BF16.
+
+Impact:
+
+  * each process restart or stage transition applies another FP16 rounding of
+    the master weights;
+  * BF16's wider exponent range is not preserved in checkpoint storage;
+  * a rare weight outside FP16's finite range could become infinity even though
+    it is representable in BF16;
+  * exact resume is impossible even when sampler and RNG state are restored.
+
+The live run is not modified by each save because conversion is performed on a
+copy. The degradation occurs when loading a saved checkpoint.
+
+Recommended correction:
+
+  Store resumable model weights in FP32, or explicitly train persistent model
+  weights in BF16 and store BF16. Keep a separate smaller FP16 inference export
+  if disk size matters. Record checkpoint dtype in metadata and add a test that
+  save/load is numerically exact for the chosen master dtype.
+
+
+3.4 HIGH: Active reasoning training is not reboot-persistent
+------------------------------------------------------------
+
+Measured state at audit:
+
+  active Python PID: 1431368
+  launch method: nohup background shell
+  tlgm1b-training.service: inactive/dead
+  service restart count from earlier runs: 22
+  installed service ExecStart: run_tlgm_1b_full_pipeline.sh
+
+Evidence:
+  run_reasoning_improvement_3day.sh:1-11
+  ops/tlgm1b-training.service:1-23
+
+The old service does not launch the new reasoning pipeline. If the workstation
+reboots, the current nohup process terminates. Even if the old service starts,
+it walks the completed pretrain/chat/repair/polish pipeline and does not resume
+the reasoning config.
+
+There is also no SIGINT/SIGTERM handler that forces a final checkpoint. With a
+500-step save interval and about 2.58 seconds/step, a shutdown can lose up to
+about 21.5 minutes of work.
+
+Recommended correction:
+
+  Create a dedicated systemd unit for run_reasoning_improvement_3day.sh or the
+  exact reasoning train command, with network-online ordering, Restart=on-failure,
+  UPS-compatible normal shutdown, and a trainer signal handler that atomically
+  saves before exiting. Do not disable the UPS shutdown service.
+
+
+3.5 MEDIUM: Registered parameter count includes 28.28M inactive values
+------------------------------------------------------------------------
+
+Evidence:
+  tlgm/causal_linear.py:15-28
+
+Each 1,024 x 1,024 sequence matrix is stored as a dense trainable parameter and
+multiplied by a lower-triangular mask at every forward pass. The strictly upper
+triangle can never affect output. There are two such matrices in each of 27
+blocks:
+
+  inactive values per matrix = 1,024 * 1,023 / 2 = 523,776
+  matrices                 = 2 * 27 = 54
+  inactive parameters      = 28,283,904
+  fraction of registered total = 2.785%
+
+These entries receive zero task gradient but still receive AdamW bookkeeping
+and decoupled weight decay because their full tensor has a gradient object.
+
+Nominal registered parameters: 1,015,592,960
+Forward-active parameters:       987,309,056
+
+Approximate training-state waste for these values, using FP32 parameter,
+gradient, and two Adam states, is about 452.5 MB decimal (431.5 MiB), excluding
+temporary buffers.
+
+This does not make the model incorrect, but it inflates model size and wastes
+memory/checkpoint space. A packed triangular parameterization would remove the
+dead values while retaining the architecture.
+
+
+3.6 MEDIUM: Current reasoning corpus contains substantial source overlap
+------------------------------------------------------------------------
+
+The 200,000-example existing-chat source comes from a 217,172-row mixture
+containing targeted examples, Alpaca, Dolly, and up to 150,000 UltraChat rows.
+Because the first 200,000 rows are used, approximately 132,828 of them are from
+UltraChat. The new reasoning mix separately adds 200,000 shuffled UltraChat
+rows from a train split containing 207,865 examples.
+
+Therefore, a large overlap is structurally expected. Exact canonical duplicate
+count has not been recorded, and multi-turn truncation differences can make
+line-level hashes miss semantically duplicated records.
+
+Impact:
+
+  * UltraChat receives more weight than the manifest names suggest;
+  * nominal 1.61M examples overstates unique-example count;
+  * repeated generic assistant style may displace other knowledge or reasoning
+    data.
+
+Recommended correction:
+
+  Add stable content hashes over normalized role/content sequences, deduplicate
+  globally, and publish unique counts and overlap matrices by source.
+
+
+3.7 MEDIUM: Pretraining validation is not representative of the full mix
+------------------------------------------------------------------------
+
+Evidence:
+  scripts/prepare_pretrain20b_tokens.py:129-202
+  tlgm/trainer.py:152-163
+
+The 20B token binary is written as four contiguous source regions. Validation
+is the final 10,000 windows of the whole binary. Consequently, pretraining
+validation comes entirely from the last source, FineWeb-Edu sample-10BT, rather
+than from a stratified sample of all four sources.
+
+The final pretraining validation loss of 2.5619 and perplexity 12.96 are valid
+for that fixed FineWeb-Edu slice under this tokenizer. They are not a balanced
+validation metric for the complete 40/25/20/15 mixture.
+
+Recommended correction:
+
+  Build immutable held-out shards per source, exclude them before constructing
+  training data, and report both per-source and weighted validation.
+
+
+3.8 MEDIUM: Reasoning best-model selection evaluates only 128 examples
+------------------------------------------------------------------------
+
+Configuration:
+
+  holdout_samples: 5,000
+  eval_batches: 32
+  validation batch size: 4
+
+The validation loader is deterministic and evaluation stops after 32 batches.
+Thus every validation event measures only the same first 128 held-out examples,
+not all 5,000. At step 3,000 this represented 55,903 supervised target tokens.
+
+Impact:
+
+  * best-checkpoint choice may reflect a narrow fixed subset;
+  * rare tasks and sources in the remaining holdout have no effect;
+  * validation can look smooth while regressions elsewhere remain invisible.
+
+Recommended correction:
+
+  Evaluate the full holdout less often, rotate deterministic subsets by event,
+  or stratify a fixed validation sample by source and task. Store source-level
+  losses, not only one aggregate.
+
+
+3.9 MEDIUM: Token totals require careful interpretation
+-------------------------------------------------------
+
+Pretraining windows contain 1,024 input positions, but causal loss predicts
+only positions 1 through 1,023. The trainer correctly records both counters:
+
+  pretraining input positions: 20,000,014,336
+  pretraining supervised targets: 19,980,483,072
+
+The difference is 19,531,264 positions, exactly one non-target input position
+per processed sequence.
+
+For SFT, total_seen_tokens includes padding. It is a compute-budget measure,
+not a count of meaningful text tokens. total_supervised_tokens is the better
+measure of assistant-target training.
+
+The phrase "trained on 20B tokens" is acceptable as an input-position budget,
+but the report and model card should always expose both counters.
+
+
+3.10 MEDIUM: No corpus revision pins, global checksums, or decontamination
+--------------------------------------------------------------------------
+
+Evidence:
+  scripts/prepare_pretrain20b_tokens.py
+  scripts/prepare_reasoning_sft.py
+
+Hugging Face dataset names and configurations are specified, but commit
+revisions are not. The 40GB pretraining binary has no recorded SHA-256 hash.
+The source builders take the beginning of streaming datasets rather than a
+revision-pinned randomized document sample. No global deduplication is applied
+across FineWeb-derived sources, Wikipedia, chat datasets, and synthetic math.
+
+No benchmark decontamination is performed. OpenMathInstruct-2 is derived from
+GSM8K and MATH training problems and publishes a contamination explorer for
+related test sets. The current reasoning mix also explicitly uses ARC-Easy,
+ARC-Challenge, OpenBookQA, and BoolQ training splits. These are not the same
+splits used by the current benchmark, but future scores after task-specific SFT
+must be labeled as task-adapted, not clean base-model zero-shot results.
+
+Recommended correction:
+
+  Pin revisions, hash every final artifact, record selected source row IDs,
+  deduplicate normalized text, and run n-gram or MinHash decontamination against
+  every evaluation set before training.
+
+
+3.11 MEDIUM: AdamW weight decay is applied to norms and biases
+-------------------------------------------------------------
+
+Evidence:
+  tlgm/trainer.py:208
+
+One optimizer group contains all parameters. Therefore weight decay is applied
+to LayerNorm scale/bias, linear biases, embedding values, and useful/inactive
+sequence weights alike. Common LLM practice excludes normalization and bias
+parameters from decay.
+
+This is not a runtime error, and changing it during an active run would change
+optimizer semantics. Future runs should use explicit decay/no-decay parameter
+groups and test group membership.
+
+
+3.12 MEDIUM: One full checkpoint has no resumable fallback
+----------------------------------------------------------
+
+The one-checkpoint policy saves disk but creates a single point of failure.
+Atomic replacement protects against many interrupted writes, but there is no
+fsync and no previous full optimizer checkpoint. The separate best checkpoint
+contains model weights only and cannot exactly resume optimizer/sampler state.
+
+The full checkpoint is about 10.19 GB decimal. A robust compromise is one
+current checkpoint plus one previous checkpoint, or periodic model-only
+archives with one current and one previous full resume state.
+
+
+3.13 LOW: Chat inference does not use mixed precision
+-----------------------------------------------------
+
+Evidence:
+  chat_cli.py:23-30
+  tlgm/generation.py:21-35
+
+Checkpoint values are loaded into a newly constructed FP32 model, and chat
+generation has no autocast context. The benchmark code does use BF16/FP16
+autocast. Chat therefore consumes more memory and is slower than necessary.
+
+Use BF16 weights or BF16 autocast on Blackwell. Validate output stability before
+making BF16 the default.
+
+
+3.14 LOW: Sliding context resets absolute positions
+---------------------------------------------------
+
+Evidence:
+  tlgm/generation.py:25-27
+  tlgm/embeddings.py:12-15
+
+After history exceeds 1,024 tokens, generation keeps the newest 1,024 IDs and
+renumbers them from absolute position zero. This is unavoidable with the
+current simple sliding implementation but differs from how those tokens were
+positioned before truncation. Learned absolute position embeddings and
+position-specific mixers make this discontinuity more significant than for a
+relative-position model.
+
+
+3.15 LOW: Logs append across retries and the pretrain JSONL contains NUL bytes
+-----------------------------------------------------------------------------
+
+The trainer always opens loss logs in append mode. The pretraining loss file
+contains approximately 2.92 million NUL bytes and 316,945 lines, more than one
+clean 305,176-step run plus validation would require. The final records are
+readable, but simple grep can classify the file as binary and abandoned-run
+records can be mixed with the production run.
+
+Every run should have a run ID and separate file, or append a formal session
+record. Add a JSONL validator and compact historical logs after completion.
+
+
+3.16 LOW: Dependency versions are not reproducibly pinned
+---------------------------------------------------------
+
+requirements.txt uses broad minimum versions. The audited workstation actually
+uses:
+
+  Python:       3.12.3
+  PyTorch:      2.11.0+cu128
+  CUDA runtime: 12.8
+  NumPy:        2.4.4
+  tokenizers:   0.22.2
+  datasets:     5.0.0
+  PyYAML:       6.0.3
+
+These are materially newer than several stated minimums. Produce a locked
+environment file and container or conda specification for reproducibility.
+
+
+4. MODEL ARCHITECTURE AS BUILT
+==============================
+
+4.1 Identity
+------------
+
+Name: TLGM-1B-1024
+Meaning: Token-Local Global-Mixing
+Objective: decoder-only autoregressive next-token prediction
+Registered parameters: 1,015,592,960
+Forward-active parameters: approximately 987,309,056
+Vocabulary: 8,192
+Maximum context: 1,024 tokens
+Embedding width: 2,048
+Model width: 2,048
+Shared local hidden width: 8,192
+Per-block feature hidden width: 8,192
+Global blocks: 27
+Attention heads: none
+Q/K/V projections: none
+KV cache: none
+
+
+4.2 Parameter breakdown
+-----------------------
+
+  Token embedding:          16,777,216
+  Absolute position embed:   2,097,152
+  Input projection:                  0 (identity)
+  Shared token encoder:     33,568,768
+  27 global blocks:        963,145,728
+  Final LayerNorm:               4,096
+  Separate output head:              0 (tied embedding)
+  ----------------------------------------------------
+  Registered total:      1,015,592,960
+
+FP32 parameter-only size: 3,874.18 MiB
+FP16/BF16 parameter-only size: 1,937.09 MiB
+
+The model-only best checkpoint is about 2.065 GB decimal. A resumable checkpoint
+with model, optimizer, scaler, RNG, sampler, config, and metadata is about
+10.19 GB decimal.
+
+
+4.3 Forward path
+----------------
+
+For token IDs X of shape [B,N], N <= 1024:
+
+  1. Token embedding E_token[X] gives [B,N,2048].
+  2. Learned absolute positions E_pos[0:N] are added.
+  3. Dropout is applied; configured dropout is zero.
+  4. Input projection is identity because embed_dim == model_dim.
+  5. A shared per-token MLP applies:
+
+       Linear(2048 -> 8192)
+       GELU
+       Dropout(0)
+       Linear(8192 -> 2048)
+       LayerNorm(2048)
+
+     This stage does not mix sequence positions and has no residual connection.
+
+  6. Twenty-seven GlobalMixingBlocks run sequentially.
+  7. Final LayerNorm is applied.
+  8. Hidden states are projected to 8,192 vocabulary logits using the token
+     embedding matrix transposed. There is no output bias.
+
+
+4.4 GlobalMixingBlock
+---------------------
+
+Each block has two residual branches.
+
+Token/sequence branch:
+
+  y = LayerNorm(x)
+  y = L2(GELU(L1(y)))
+  x = x + y
+
+L1 and L2 each use a learned 1,024 x 1,024 matrix shared across all 2,048
+feature channels. At runtime only the lower triangle is active:
+
+  y[b,n,d] = bias[n] + sum over j<=n of weight[n,j] * x[b,j,d]
+
+Feature branch:
+
+  y = LayerNorm(x)
+  y = Linear(8192 -> 2048)(Dropout(GELU(Linear(2048 -> 8192)(y))))
+  x = x + y
+
+There is no content-dependent selection of earlier positions. Every feature
+channel uses the same learned position-mixing matrix in a given sequence layer.
+
+
+4.5 Initialization
+------------------
+
+General Linear/Embedding weights use Normal(0, 0.02). Biases are zero and
+LayerNorm scales are one. Sequence mixer L1 is Xavier uniform. L2's Xavier gain
+is divided by sqrt(2*27). The output projection of every feature MLP uses
+standard deviation 0.02/sqrt(54). This stabilizes residual accumulation.
+
+
+4.6 Causality and objective
+---------------------------
+
+The lower-triangular mask prevents position n from reading j>n. Automated tests
+change future input tokens and confirm that earlier logits remain identical.
+
+Loss is standard one-token causal cross entropy:
+
+  logits[:, 0:N-1] predict labels[:, 1:N]
+
+SFT sets prompt and assistant-prefix labels to -100, so only assistant content
+and EOS are supervised when retained.
+
+
+4.7 Computational characteristics
+----------------------------------
+
+Advantages:
+
+  * simple causal mechanism;
+  * no attention softmax;
+  * no QKV projections;
+  * global receptive field in every block;
+  * fixed memory independent of a KV cache during decoding;
+  * exact causal structure is easy to test.
+
+Disadvantages:
+
+  * sequence mixing is O(N^2 * D) per mixer and is repeated twice per block;
+  * feature MLPs dominate a large part of compute;
+  * no content-dependent routing means a token cannot dynamically choose which
+    prior token to retrieve;
+  * learned matrices are tied to absolute positions and exactly 1,024 context;
+  * no KV cache means every generated token recomputes the retained context;
+  * autoregressive generation before context saturation grows much more
+    expensive than cached Transformer decoding;
+  * the architecture cannot be extended to 2K/4K merely by changing one config
+    value because sequence matrices and position embeddings change shape.
+
+
+5. TOKENIZER
+============
+
+Type: Hugging Face tokenizers ByteLevelBPETokenizer
+Vocabulary size: 8,192
+Special IDs:
+
+  0 <pad>
+  1 <bos>
+  2 <eos>
+  3 <unk>
+
+Tokenizer files:
+
+  tokenizer/vocab.json
+  SHA-256 E4C5DADFA59E1059324269132827F4C548F3411C5409A90BDD0FEF0212A119D3
+
+  tokenizer/merges.txt
+  SHA-256 4FF5482BA80A329A4F5FB50E5179460F3C97FE7DFE814AB4C0EB8C1183EADCE4
+
+The tokenizer was trained from scratch, not copied from another language
+model. The utility extracts up to 200,000 records from the earlier 120M
+project's prepared pretraining JSONL and trains byte-level BPE with minimum
+merge frequency two.
+
+The 8K vocabulary reduces embedding/output parameters and output softmax cost,
+but tokenizes English less compactly than common 32K-150K vocabularies. Thus
+1,024 TLGM tokens generally represent less text than 1,024 tokens in several
+comparison models, and raw training token counts are tokenizer-dependent.
+
+
+6. PRETRAINING DATA
+===================
+
+The final binary contains exactly 20,000,000,000 uint16 tokenizer IDs and is
+40,000,000,000 bytes (37.25 GiB). Documents are wrapped in BOS/EOS when they fit
+within source quotas. The model was initialized randomly.
+
+Source mixture:
+
+  40% / 8.0B tokens
+  HuggingFaceTB/smollm-corpus, fineweb-edu-dedup
+  Deduplicated educationally filtered English web text.
+
+  25% / 5.0B tokens
+  HuggingFaceTB/smollm-corpus, cosmopedia-v2
+  Synthetic educational textbooks, articles, blogs, and stories generated by
+  Mixtral-8x7B-Instruct from diverse seed material.
+
+  20% / 4.0B tokens
+  wikimedia/wikipedia, 20231101.en
+  Cleaned English Wikipedia article text from the November 2023 dump.
+
+  15% / 3.0B tokens
+  HuggingFaceFW/fineweb-edu, sample-10BT
+  Educationally scored English FineWeb material.
+
+Data-quality cautions:
+
+  * revisions are not pinned;
+  * cross-source deduplication is not run;
+  * streamed source order is not explicitly shuffled before quota selection;
+  * no final binary hash is recorded;
+  * first three source row counts are unavailable in the completion manifest
+    because tokenization resumed after interruption;
+  * web data can contain errors, bias, personal information, unsafe material,
+    benchmark content, and license obligations despite upstream filtering.
+
+
+7. COMPLETED POST-TRAINING BEFORE THE CURRENT RUN
+=================================================
+
+7.1 Broad chat SFT
+------------------
+
+Dataset rows: 217,172
+Composition by construction:
+
+  * 200 repeated targeted chat examples;
+  * approximately 51,972 Alpaca instruction records;
+  * 15,000 Databricks Dolly records;
+  * 150,000 UltraChat train_sft conversations.
+
+Training:
+
+  steps: 12,000
+  effective sequences/step: 64
+  input positions processed: 786,432,000
+  supervised assistant targets: 418,072,038
+  GPU time: 10.197 hours
+  final sampled loss: 1.3451
+
+
+7.2 Repair SFT
+--------------
+
+Dataset rows: 750,500
+
+This is a heavily repeated synthetic set generated from 500 repetitions of:
+
+  * greetings;
+  * addition/subtraction over small integer grids;
+  * seven country capitals;
+  * ten basic concept definitions with prompt variants;
+  * fixed uncertainty examples;
+  * one fixed robot story.
+
+Training:
+
+  steps: 3,000
+  input positions processed: 196,608,000
+  supervised assistant targets: 1,676,354
+  GPU time: 2.368 hours
+  final sampled loss: 0.000193
+
+The extremely low loss is memorization of a narrow repeated distribution, not
+evidence of general reasoning. Only about 0.85% of padded input positions were
+supervised targets in this stage.
+
+
+7.3 Polish SFT
+--------------
+
+Dataset rows: 7,000
+Training:
+
+  steps: 800
+  input positions processed: 52,428,800
+  supervised assistant targets: 801,552
+  GPU time: 0.640 hours
+  final sampled loss: 0.0000541
+
+Again, the near-zero loss indicates repeated narrow examples, not broad held-out
+capability.
+
+
+8. ACTIVE LARGE REASONING CONTINUATION
+======================================
+
+Initialization checkpoint:
+  checkpoints/tlgm_1b_1024ctx_sft_final.pth
+
+Latest resumable checkpoint:
+  checkpoints/tlgm_1b_1024ctx_sft_reasoning_3day.pth
+
+Best validation model:
+  checkpoints/tlgm_1b_1024ctx_sft_reasoning_3day_best.pth
+
+Prepared examples: 1,610,482
+Training examples after fixed holdout: 1,605,482
+
+Source distribution:
+
+  OpenMathInstruct-2       1,000,000   62.09%
+  OpenR1-Math-220k            93,728    5.82%
+  UltraChat                   200,000   12.42%
+  Existing broad chat         200,000   12.42%
+  Verified synthetic logic     99,000    6.15%
+  Science/reading              17,754    1.10%
+
+OpenMathInstruct-2 contains synthetic problem/solution pairs generated with
+Llama-3.1-405B-Instruct from GSM8K/MATH training problems and augmentations.
+The project uses a shuffled 1M subset of the full train stream.
+
+OpenR1-Math default contains approximately 94K selected problems with verified
+DeepSeek-R1 reasoning traces. The requested 200K could not be obtained from the
+default config because that config only contains about 93.7K usable rows.
+
+Science/reading contains ARC-Easy train, ARC-Challenge train, OpenBookQA train,
+and BoolQ train examples. Answers are short and usually do not supply the
+"brief explanation" requested by the multiple-choice prompt.
+
+Synthetic logic contains arithmetic, elementary word subtraction, numeric
+comparison, simple syllogisms, implication fallacy checks, basic facts, and
+uncertainty responses.
+
+Training configuration:
+
+  precision: BF16 autocast, FP32 persistent parameters
+  microbatch: 4 sequences
+  gradient accumulation: 16
+  effective batch: 64 sequences
+  padded input positions/step: 65,536
+  learning rate: 5e-7
+  warmup: 2,000 steps
+  schedule: cosine to 10% of peak
+  max steps: 120,000
+  saves: every 500 steps
+  validation: every 1,000 steps
+  nominal padded input budget: 7,864,320,000 positions
+  expected example passes: 4.784
+
+At checkpoint step 3,000:
+
+  input positions: 196,608,000
+  supervised targets: 77,450,950
+  supervised fraction: 39.394%
+  cumulative stage GPU time: 2.148 hours
+  last sampled loss: 1.2622
+  validation loss: 1.2570
+  validation perplexity: 3.5149
+
+Validation improved monotonically over the first three measurements:
+
+  step 1,000: loss 1.3336, perplexity 3.7946
+  step 2,000: loss 1.2844, perplexity 3.6125
+  step 3,000: loss 1.2570, perplexity 3.5149
+
+If the current supervised fraction remains stable, the full stage would process
+approximately 3.098B supervised assistant targets. This is a projection, not a
+guarantee, because sampler composition changes over time.
+
+
+9. TOTAL TRAINING BUDGET SO FAR
+===============================
+
+Completed before active reasoning stage:
+
+  input positions processed: 21,035,483,136
+  supervised targets:         20,401,033,016
+  measured GPU time:             244.901 hours
+  measured GPU days:              10.204 days
+
+Composition of the completed total:
+
+  pretraining input positions: 20,000,014,336
+  broad SFT positions:            786,432,000
+  repair SFT positions:           196,608,000
+  polish SFT positions:            52,428,800
+
+Including the reliable active checkpoint at reasoning step 3,000:
+
+  cumulative input positions: 21,232,091,136
+  cumulative supervised targets: 20,478,483,966
+  cumulative measured GPU time: 247.050 hours
+
+The pretraining corpus itself contains 20.000B stored IDs. Training sampled the
+19,521,250-window train split once and then began another sampler epoch for
+10,014 windows to reach the configured step count. A separate final 10,000
+windows (10.24M IDs) formed validation.
+
+
+10. TRAINING HARDWARE AND MEASURED RESOURCE USE
+===============================================
+
+Primary workstation:
+
+  GPU: NVIDIA RTX PRO 6000 Blackwell Workstation Edition
+  marketed VRAM: 96 GB
+  nvidia-smi total: 97,887 MiB (95.59 GiB)
+  driver: 595.84
+  configured power limit: 360 W
+  system RAM: 125 GiB reported
+  swap: 8 GiB
+  filesystem: 3.1 TB, 2.5 TB free at audit
+
+Active reasoning measurement:
+
+  GPU utilization: 98%
+  temperature: 69 C
+  board power: approximately 360 W
+  total GPU memory used: 27,171 MiB (26.53 GiB)
+  trainer process GPU memory: 26,560 MiB (25.94 GiB)
+  trainer host RSS: approximately 1.62 GiB
+  elapsed seconds/step: approximately 2.578
+  padded positions/second: approximately 25,422
+  supervised targets/second at step-3K ratio: approximately 10,015
+
+Completed pretraining:
+
+  GPU time: 834,110 seconds = 231.697 hours = 9.654 GPU days
+  average input throughput: approximately 23,978 positions/second
+
+Current projected reasoning duration at measured rate:
+
+  full 120K stage: approximately 85.9 GPU hours
+  remaining from step 3K: approximately 83.8 hours
+  projected completion near 2026-08-16 00:40 UTC+08:00 if uninterrupted
+
+Data preparation for the reasoning mix took roughly 28 minutes before GPU
+training began. Network and Hugging Face startup latency were significant for
+some streaming sources.
+
+Benchmark inference with BF16 autocast and batch size eight measured peak
+PyTorch allocated VRAM between 4.11 and 4.66 GiB depending on task. This excludes
+some CUDA context/driver reservation and is not the same as nvidia-smi process
+memory. Interactive chat currently uses FP32 execution and was not benchmarked
+during this audit because loading another 1B model while training would disturb
+the active experiment.
+
+Temperature 69 C at the 360 W cap is operationally reasonable for this GPU,
+assuming fan, hotspot, and memory-junction temperatures remain within vendor
+limits. Only core temperature is currently recorded.
+
+
+11. CHECKPOINTS AND STORAGE
+===========================
+
+Completed resumable checkpoints are each approximately 10.19 GB decimal:
+
+  tlgm_1b_1024ctx_pretrain20b.pth
+  tlgm_1b_1024ctx_sft_chatmix.pth
+  tlgm_1b_1024ctx_sft_repair.pth
+  tlgm_1b_1024ctx_sft_final.pth
+  tlgm_1b_1024ctx_sft_reasoning_3day.pth
+
+Current best model-only checkpoint:
+
+  tlgm_1b_1024ctx_sft_reasoning_3day_best.pth
+  approximately 2.065 GB decimal
+
+Large data artifacts:
+
+  pretrain20b_tokens.bin:             40.000 GB
+  sft_reasoning_large.jsonl:           3.366 GB
+  OpenMath prepared source:            1.211 GB
+  UltraChat prepared source:           1.197 GB
+  existing-chat prepared source:       0.805 GB
+  OpenR1 prepared source:               0.129 GB
+
+Hugging Face caches account for additional workstation disk use and are not
+fully represented by these project-local numbers.
+
+
+12. COMPLETED BENCHMARK PERFORMANCE
+===================================
+
+Checkpoint evaluated:
+  checkpoints/tlgm_1b_1024ctx_sft_final.pth
+
+Important: this benchmark was run before the active 120K reasoning continuation.
+There is no post-reasoning benchmark yet.
+
+Protocol:
+
+  * zero-shot multiple-choice conditional continuation log-likelihood;
+  * complete official test/validation splits where available;
+  * BF16 autocast;
+  * batch size eight;
+  * both raw summed log-likelihood and token-length-normalized scores;
+  * deterministic prepared benchmark files and per-example predictions;
+  * no lm-evaluation-harness prompt-template identity guarantee.
+
+Full results over 20,110 questions:
+
+  Task            Questions   Raw accuracy   Normalized   Random
+  ----------------------------------------------------------------
+  ARC-Easy            2,376       55.98%        45.41%    25.02%
+  HellaSwag          10,042       32.78%        37.90%    25.00%
+  PIQA                1,838       65.23%        65.72%    50.00%
+  BoolQ               3,270       48.50%        48.50%    50.00%
+  WinoGrande          1,267       51.93%        51.78%    50.00%
+  OpenBookQA            500       20.20%        31.60%    25.00%
+  TruthfulQA MC1        817       17.50%        18.73%    22.61%
+
+Aggregates:
+
+  weighted raw accuracy:       41.32%
+  weighted normalized accuracy:42.99%
+  macro raw accuracy:          41.73%
+  macro normalized accuracy:   42.81%
+
+Interpretation:
+
+  * PIQA is clearly above chance and is the strongest measured task.
+  * ARC-Easy raw scoring is strong, but normalized scoring drops materially,
+    showing sensitivity to answer length/tokenization.
+  * HellaSwag is above chance but well behind mature 1B-class models.
+  * WinoGrande is statistically near chance.
+  * BoolQ is below its 50% random baseline.
+  * OpenBookQA raw is below chance; normalization raises it above chance.
+  * TruthfulQA MC1 is below its variable-choice random baseline.
+  * the weighted aggregate is dominated by HellaSwag because it contributes
+    about half of all questions; the macro aggregate is the safer summary.
+
+The benchmark code correctly applies causal next-token scoring and masks only
+candidate continuation tokens. Right padding does not affect earlier logits
+because TLGM is causal. For overlength prompts, left truncation removes BOS and
+resets absolute positions, which is a protocol limitation.
+
+
+13. COMPARISON WITH OTHER 1B-CLASS MODELS
+=========================================
+
+13.1 Scale and architecture
+---------------------------
+
+  Model               Params    Pretrain tokens   Context       Architecture
+  ---------------------------------------------------------------------------
+  TLGM-1B             1.016B    20B               1,024         causal matrix mixer
+  Pythia-1B           1.012B    299.9B            2,048         Transformer
+  TinyLlama-1.1B      1.1B      3T                2,048         Llama/GQA Transformer
+  Llama-3.2-1B        1.23B     up to 9T          128K          GQA Transformer
+  Qwen2.5-1.5B        1.54B     up to 18T family  32,768 card   GQA Transformer
+  SmolLM2-1.7B        1.7B      11T               model-specific Transformer
+
+Relative pretraining token scale:
+
+  TLGM uses 6.67% of Pythia-1B's tokens.
+  TLGM uses 0.67% of TinyLlama-1.1B's tokens.
+  TLGM uses at most 0.22% of Llama-3.2's reported token budget.
+  TLGM uses 0.18% of SmolLM2-1.7B's tokens.
+  TLGM uses at most 0.11% of Qwen2.5's reported family budget.
+
+Llama-3.2-1B is not a pure from-scratch small-model comparison: Meta reports
+knowledge distillation using larger Llama model logits. TLGM used no pretrained
+teacher weights or logits during pretraining.
+
+
+13.2 Closest task-level comparison
+----------------------------------
+
+TinyLlama's official card publishes a commonsense table using the same task
+families. Pythia numbers are reproduced in that official TinyLlama table. The
+standard metric normally uses normalized accuracy for HellaSwag, OpenBookQA,
+ARC, and PIQA, and raw accuracy for WinoGrande and BoolQ. Applying that selection
+to TLGM gives:
+
+  Task          TLGM final   Pythia-1B/300B   TinyLlama-1.1B/3T
+  ----------------------------------------------------------------
+  HellaSwag       37.90%          47.16%              59.20%
+  OpenBookQA      31.60%          31.40%              36.00%
+  WinoGrande      51.93%          53.43%              59.12%
+  ARC-Easy        45.41%          48.99%              55.25%
+  BoolQ           48.50%          60.83%              57.83%
+  PIQA            65.72%          69.21%              73.29%
+  Six-task mean   46.84%          51.84%              56.78%
+
+Caution: this table is directionally useful, not strictly apples-to-apples.
+TLGM uses custom prompts and a custom scorer; published Pythia/TinyLlama results
+come from their evaluation setup. TLGM is chat-SFT tuned, while the cited table
+primarily describes base checkpoints. Exact comparison requires running all
+checkpoints through the same pinned evaluator and prompts.
+
+Observations:
+
+  * TLGM is close to Pythia on OpenBookQA and only slightly behind on
+    WinoGrande, but both are near weak/chance performance there.
+  * TLGM trails Pythia most sharply on BoolQ.
+  * TinyLlama's 3T-token checkpoint leads TLGM on every listed task.
+  * TinyLlama's official training curve improves substantially as tokens rise
+    from roughly 100B to 3T, supporting the conclusion that 20B is a very small
+    budget for strong 1B general capability.
+
+
+13.3 Modern 1B-1.7B orientation
+-------------------------------
+
+The SmolLM2 official card reports zero-shot base results:
+
+  Model/base        HellaSwag  PIQA   WinoGrande  OpenBookQA
+  ----------------------------------------------------------
+  TLGM final*          37.9    65.7      51.9        31.6
+  Llama-3.2-1B         61.2    74.8      57.8        38.4
+  Qwen2.5-1.5B         66.4    76.1      59.3        40.0
+  SmolLM2-1.7B         68.7    77.6      59.4        42.2
+
+*TLGM numbers use the metric selection described above and a different local
+protocol. The other row values are from SmolLM2's lighteval table.
+
+Modern models benefit from trillions of tokens, larger/diverse vocabularies,
+longer context, highly optimized Transformer blocks, curated math/code data,
+preference optimization, and in Llama-3.2's case distillation. It is not
+reasonable to expect the current 20B-token TLGM checkpoint to match them solely
+because its registered parameter count is near 1B.
+
+
+13.4 What can and cannot be inferred
+------------------------------------
+
+It is reasonable to infer that more high-quality pretraining and carefully
+formatted reasoning SFT can improve TLGM. It is not justified to extrapolate
+linearly from 20B to 300B/3T tokens or claim that equal token counts would erase
+the architecture gap. TLGM's content-independent position mixing has a genuine
+retrieval and generalization disadvantage relative to attention. Only a
+controlled scaling experiment at several token budgets can separate data scale
+from architecture quality.
+
+
+14. TEST COVERAGE AND VERIFICATION
+==================================
+
+Current result:
+
+  local:  14 passed
+  remote: 14 passed
+
+Covered properties:
+
+  * exact registered 1B parameter count;
+  * tied token/output embedding identity;
+  * no observed future-token effect on prefix logits;
+  * finite initial loss and gradients;
+  * pretraining labels are not pre-shifted;
+  * deterministic sampler resume;
+  * long prompt retains assistant targets;
+  * overlength answer retains reasoning beginning;
+  * checkpoint resume restores sampler and counters;
+  * benchmark label normalization;
+  * deterministic benchmark subsets;
+  * finite batched candidate scores;
+  * raw and normalized benchmark outputs.
+
+Important missing tests:
+
+  * FP32/BF16 checkpoint round-trip precision;
+  * SIGINT/SIGTERM save and restart behavior;
+  * full DataLoader checkpoint equivalence at epoch boundary;
+  * multi-turn overlength target coverage;
+  * EOS/final-answer preservation for long reasoning;
+  * global SFT deduplication;
+  * source-stratified validation;
+  * exact corpus hashes and pinned dataset revisions;
+  * chat mixed-precision memory/throughput;
+  * full 1B forward/backward numerical tests in current environment;
+  * generation correctness at context rollover;
+  * invalid config/value validation;
+  * NaN/Inf failure escalation instead of potentially retrying forever.
+
+
+15. SAFETY, LICENSING, AND MODEL-CARD LIMITATIONS
+=================================================
+
+This model should be treated as an experimental research model, not a reliable
+ChatGPT replacement. It has no RLHF/DPO safety alignment, no moderation layer,
+no retrieval grounding, no citation mechanism, and no factuality guarantee.
+
+Expected limitations:
+
+  * hallucinations and fabricated facts;
+  * weak multi-step logic despite targeted SFT;
+  * weak coding because code is not a meaningful part of the 20B final mix;
+  * English-centric behavior;
+  * only 1,024 tokens of context;
+  * answer substitution and memorization from narrow repeated repair data;
+  * poor calibrated uncertainty;
+  * unsafe, biased, private, or copyrighted patterns inherited from public web
+    and synthetic source data;
+  * slow token-by-token generation without a cache;
+  * no guarantee of robust behavior under adversarial prompts.
+
+Dataset licenses are not uniform. Examples include ODC-By for SmolLM Corpus,
+Wikipedia's CC BY-SA/GFDL terms, CC BY 4.0 for OpenMathInstruct-2, Apache 2.0
+for OpenR1, MIT for UltraChat, and source-specific terms for Alpaca, Dolly,
+FineWeb material, and underlying web documents. Redistribution requires a
+separate legal/license review; public availability is not sufficient by itself.
+
+
+16. PRIORITIZED REMEDIATION PLAN
+===============================
+
+Priority 0 - protect the active run:
+
+  1. Install a dedicated reasoning systemd service without disabling UPS
+     shutdown behavior.
+  2. Add graceful signal checkpointing.
+  3. Keep the current full checkpoint plus one previous full checkpoint.
+  4. Do not change model/data semantics inside the already running process.
+
+Priority 1 - correct SFT semantics before another major run:
+
+  1. Expand multi-turn chats into per-assistant-turn samples.
+  2. Preserve final answers and EOS for long math records.
+  3. Filter/compact traces that cannot fit 1,024 tokens.
+  4. Deduplicate UltraChat and all global instruction sources.
+  5. Record truncation, target-token, duplicate, and source statistics.
+
+Priority 2 - checkpoint and optimizer quality:
+
+  1. Store resumable master weights in FP32 or BF16, never implicit FP16.
+  2. Separate weight-decay and no-decay parameter groups.
+  3. Add checkpoint schema/version, dtype, code revision, and artifact hashes.
+  4. Add fallback/recovery tests using forced process termination.
+
+Priority 3 - evaluation integrity:
+
+  1. Run lm-evaluation-harness or lighteval with pinned versions and standard
+     prompts in addition to the custom evaluator.
+  2. Add ARC-Challenge, GSM8K exact-match, MMLU, SciQ, and a small generation
+     quality set appropriate for 1B models.
+  3. Decontaminate train data against all benchmark test/validation examples.
+  4. Evaluate baseline final, latest reasoning, and best reasoning checkpoints
+     with the identical pipeline.
+  5. Report confidence intervals and both macro and per-task scores.
+
+Priority 4 - architecture efficiency research:
+
+  1. Pack lower-triangular sequence parameters.
+  2. Explore content-conditioned gating that remains non-QKV and non-attention.
+  3. Replace fixed absolute-only behavior with a relative or shift-stable
+     non-attention position mechanism.
+  4. Benchmark prefill and decode latency against a same-width Transformer.
+  5. Test architecture scaling at 50M, 120M, 350M, and 1B under equal tokens.
+
+Priority 5 - reproducibility and release:
+
+  1. Pin dataset revisions and Python package versions.
+  2. Hash tokenizer, token binary, JSONL datasets, configs, and checkpoints.
+  3. Preserve an immutable run manifest and git/code archive.
+  4. Publish exact licenses, data lineage, training curves, benchmark scripts,
+     and known contamination.
+
+
+17. REPRODUCTION SUMMARY
+========================
+
+To recreate an architecture-compatible model:
+
+  * train or use the exact hashed 8,192 ByteLevelBPE tokenizer;
+  * construct token and absolute position embeddings of width 2,048;
+  * apply the shared 2,048 -> 8,192 -> 2,048 GELU token encoder and LayerNorm;
+  * stack 27 blocks, each containing two learned causal 1,024 x 1,024 sequence
+    matrices and one 2,048 -> 8,192 -> 2,048 GELU feature MLP;
+  * use pre-normalization and residual connections in both block branches;
+  * apply final LayerNorm and tied vocabulary projection;
+  * train with one-token shifted cross entropy;
+  * use the exact initialization rules in Section 4.5;
+  * use AdamW, gradient clipping 1.0, the configured cosine schedule, and full
+    sampler/RNG checkpointing;
+  * use assistant-only targets for SFT;
+  * implement the remediation items above for a new clean experiment rather
+    than reproducing known data/checkpoint weaknesses.
+
+Bit-for-bit reproduction is not currently possible from upstream identifiers
+alone because source revisions and the 40GB binary hash are not recorded, CUDA
+kernels may be nondeterministic, and pretraining crossed FP16/BF16 phases whose
+exact transition is not encoded in checkpoint metadata.
+
+
+18. PRIMARY EXTERNAL SOURCES
+============================
+
+Project comparison sources:
+
+  TinyLlama official model card and project:
+  https://huggingface.co/TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T
+  https://github.com/jzhang38/TinyLlama
+
+  Pythia-1B official model card:
+  https://huggingface.co/EleutherAI/pythia-1b
+
+  SmolLM2-1.7B official model card/paper:
+  https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B
+  https://arxiv.org/abs/2502.02737
+
+  Llama 3.2 official Meta model card:
+  https://github.com/meta-llama/llama-models/blob/main/models/llama3_2/MODEL_CARD.md
+
+  Qwen2.5 official model card/blog:
+  https://huggingface.co/Qwen/Qwen2.5-1.5B
+  https://qwenlm.github.io/blog/qwen2.5/
+
+Training-data sources:
+
+  SmolLM Corpus:
+  https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus
+
+  FineWeb-Edu:
+  https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu
+
+  Wikimedia Wikipedia:
+  https://huggingface.co/datasets/wikimedia/wikipedia
+
+  OpenMathInstruct-2:
+  https://huggingface.co/datasets/nvidia/OpenMathInstruct-2
+
+  OpenR1-Math-220k:
+  https://huggingface.co/datasets/open-r1/OpenR1-Math-220k
+
+  UltraChat 200k:
+  https://huggingface.co/datasets/HuggingFaceH4/ultrachat_200k
+
+  Alpaca:
+  https://huggingface.co/datasets/tatsu-lab/alpaca
+
+  Databricks Dolly 15k:
+  https://huggingface.co/datasets/databricks/databricks-dolly-15k
+
+  ARC, OpenBookQA, BoolQ benchmark/training sources:
+  https://huggingface.co/datasets/allenai/ai2_arc
+  https://huggingface.co/datasets/allenai/openbookqa
+  https://huggingface.co/datasets/google/boolq
+
+
+19. FINAL ASSESSMENT
+====================
+
+TLGM-1B-1024 is a valid and technically interesting non-Transformer causal
+language-model experiment. Its completed 20B-position pretraining and working
+chat adaptation are substantial for a single-workstation project. The model's
+best demonstrated strength is basic physical/science commonsense, while reading
+comprehension, truthfulness, robust logic, and general chat intelligence remain
+weak.
+
+The active reasoning continuation is learning according to held-out loss, but
+its current data formatting leaves significant capability on the table. The
+most valuable next work is not blindly extending the same 120K steps. It is to
+make long-answer and multi-turn supervision semantically correct, protect exact
+checkpoint resumes, deduplicate and decontaminate data, and evaluate with a
+standard pinned harness.
+
+Even after those corrections, matching modern 1B-class models would require a
+much larger and more diverse pretraining budget and may require architectural
+changes that add content-dependent retrieval without violating the no-QKV/no-
+Transformer design constraint. Equal parameter count does not imply equal
+intelligence, and the present 20B-token budget is two to three orders of
+magnitude below leading modern small-model training budgets.
+
+END OF REPORT

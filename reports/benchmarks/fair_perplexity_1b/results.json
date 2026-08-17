@@ -1,0 +1,376 @@
+{
+  "protocol": {
+    "context_length": 1024,
+    "batch_size": 4,
+    "dtype": "bfloat16",
+    "device": "cuda",
+    "output_dir": "outputs/fair_perplexity_1b",
+    "cache_dir": "data/eval_cache"
+  },
+  "environment": {
+    "python": "3.12.3",
+    "torch": "2.11.0+cu128",
+    "transformers": "5.14.1",
+    "device_name": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition"
+  },
+  "datasets": [
+    {
+      "name": "WikiText-2-raw",
+      "repository": "Salesforce/wikitext",
+      "config": "wikitext-2-raw-v1",
+      "split": "test",
+      "revision": "b08601e04326c79dfdd32d625aee71d232d685c3",
+      "rows": 4358,
+      "bytes": 1296370,
+      "sha256_utf8": "696cca6b65a171b0a358a4be6732cdfdf2dd6164a32e20fd70e3c13fc4dfae83"
+    },
+    {
+      "name": "WikiText-103-raw",
+      "repository": "Salesforce/wikitext",
+      "config": "wikitext-103-raw-v1",
+      "split": "test",
+      "revision": "b08601e04326c79dfdd32d625aee71d232d685c3",
+      "rows": 4358,
+      "bytes": 1296370,
+      "sha256_utf8": "696cca6b65a171b0a358a4be6732cdfdf2dd6164a32e20fd70e3c13fc4dfae83"
+    }
+  ],
+  "models": [
+    {
+      "name": "TLGM-1B-original-SFT",
+      "metadata": {
+        "type": "tlgm",
+        "checkpoint": "/home/user/minimind/tlgm_1b_1024ctx/checkpoints/tlgm_1b_1024ctx_sft_final.pth",
+        "checkpoint_sha256": "1046a0f79c4c081391129992688cf5ff139e653db6033a9b0378f97ee04ccae2",
+        "checkpoint_metadata": {
+          "step": 800,
+          "max_steps": 800,
+          "last_loss": 5.408071956480853e-05,
+          "last_lr": 5e-08,
+          "tokens_per_step": 65536,
+          "total_tokens_trained": 52428800,
+          "total_seen_tokens": 52428800,
+          "total_supervised_tokens": 801552,
+          "cumulative_gpu_time_seconds": 2303.577291595051,
+          "cumulative_gpu_time_hours": 0.6398825809986253,
+          "architecture": "TLGM lower-triangular causal sequence mixer"
+        },
+        "parameters": 1015592960,
+        "vocabulary_size": 8192
+      },
+      "results": [
+        {
+          "dataset": "WikiText-2-raw",
+          "tokens": 365414,
+          "segments": 358,
+          "bytes": 1296370,
+          "total_negative_log_likelihood_nats": 1133896.9743652344,
+          "cross_entropy_nats_per_token": 3.1030474321324153,
+          "token_perplexity": 22.26570121067424,
+          "bits_per_byte": 1.2618832137396914,
+          "byte_perplexity": 2.3980856945269995,
+          "tokens_per_byte": 0.28187477340574063,
+          "elapsed_seconds": 4.326762698008679,
+          "tokens_per_second": 84454.3658861106,
+          "peak_cuda_memory_gib": 2.4592857360839844
+        },
+        {
+          "dataset": "WikiText-103-raw",
+          "tokens": 365414,
+          "segments": 358,
+          "bytes": 1296370,
+          "total_negative_log_likelihood_nats": 1133896.9743652344,
+          "cross_entropy_nats_per_token": 3.1030474321324153,
+          "token_perplexity": 22.26570121067424,
+          "bits_per_byte": 1.2618832137396914,
+          "byte_perplexity": 2.3980856945269995,
+          "tokens_per_byte": 0.28187477340574063,
+          "elapsed_seconds": 4.290835309075192,
+          "tokens_per_second": 85161.50671808425,
+          "peak_cuda_memory_gib": 2.4592857360839844
+        }
+      ]
+    },
+    {
+      "name": "TLGM-1B-reasoning-best",
+      "metadata": {
+        "type": "tlgm",
+        "checkpoint": "/home/user/minimind/tlgm_1b_1024ctx/checkpoints/tlgm_1b_1024ctx_sft_reasoning_3day_best.pth",
+        "checkpoint_sha256": "f9c01608f37ff212e1b442d263e54db100c2c03c4ccdc1e01c8d55f6694676e9",
+        "checkpoint_metadata": {
+          "step": 120000,
+          "validation_loss": 1.0480410290134043,
+          "validation_perplexity": 2.8520585420686126,
+          "total_seen_tokens": 7864320000,
+          "cumulative_gpu_time_seconds": 319233.216547727
+        },
+        "parameters": 1015592960,
+        "vocabulary_size": 8192
+      },
+      "results": [
+        {
+          "dataset": "WikiText-2-raw",
+          "tokens": 365414,
+          "segments": 358,
+          "bytes": 1296370,
+          "total_negative_log_likelihood_nats": 1064325.0014648438,
+          "cross_entropy_nats_per_token": 2.912655238892992,
+          "token_perplexity": 18.40560502024533,
+          "bits_per_byte": 1.1844584505252889,
+          "byte_perplexity": 2.2727806447225283,
+          "tokens_per_byte": 0.28187477340574063,
+          "elapsed_seconds": 4.297235377016477,
+          "tokens_per_second": 85034.67181583683,
+          "peak_cuda_memory_gib": 2.4592857360839844
+        },
+        {
+          "dataset": "WikiText-103-raw",
+          "tokens": 365414,
+          "segments": 358,
+          "bytes": 1296370,
+          "total_negative_log_likelihood_nats": 1064325.0014648438,
+          "cross_entropy_nats_per_token": 2.912655238892992,
+          "token_perplexity": 18.40560502024533,
+          "bits_per_byte": 1.1844584505252889,
+          "byte_perplexity": 2.2727806447225283,
+          "tokens_per_byte": 0.28187477340574063,
+          "elapsed_seconds": 4.317466106032953,
+          "tokens_per_second": 84636.21740756545,
+          "peak_cuda_memory_gib": 2.4592857360839844
+        }
+      ]
+    },
+    {
+      "name": "TLGM-1B-reasoning-final",
+      "metadata": {
+        "type": "tlgm",
+        "checkpoint": "/home/user/minimind/tlgm_1b_1024ctx/checkpoints/tlgm_1b_1024ctx_sft_reasoning_3day.pth",
+        "checkpoint_sha256": "3d07334c6ceffb3525eea30270ef6277119a7da9d3478c199091514a261c0bb0",
+        "checkpoint_metadata": {
+          "step": 120000,
+          "max_steps": 120000,
+          "last_loss": 1.104241043329239,
+          "last_lr": 5e-08,
+          "tokens_per_step": 65536,
+          "total_tokens_trained": 7864320000,
+          "total_seen_tokens": 7864320000,
+          "total_supervised_tokens": 2677269185,
+          "total_context_positions": 7864320000,
+          "total_nonpad_input_tokens": 4136722089,
+          "nonpad_counter_start_step": 5500,
+          "cumulative_gpu_time_seconds": 319233.216547727,
+          "cumulative_gpu_time_hours": 88.67589348547972,
+          "architecture": "TLGM lower-triangular causal sequence mixer",
+          "best_validation_loss": 1.0480410290134043,
+          "checkpoint_model_dtype": "float32",
+          "session_id": "20b0c80a608e41818373efa9225a5253",
+          "stop_signal": null,
+          "data_fingerprint": "d7d58e4cb98884f83f42c95e389a58ac9f9ebdb4dbf632614b8aadb5606e9025"
+        },
+        "parameters": 1015592960,
+        "vocabulary_size": 8192
+      },
+      "results": [
+        {
+          "dataset": "WikiText-2-raw",
+          "tokens": 365414,
+          "segments": 358,
+          "bytes": 1296370,
+          "total_negative_log_likelihood_nats": 1064325.0014648438,
+          "cross_entropy_nats_per_token": 2.912655238892992,
+          "token_perplexity": 18.40560502024533,
+          "bits_per_byte": 1.1844584505252889,
+          "byte_perplexity": 2.2727806447225283,
+          "tokens_per_byte": 0.28187477340574063,
+          "elapsed_seconds": 4.31933586508967,
+          "tokens_per_second": 84599.57998483037,
+          "peak_cuda_memory_gib": 2.4592857360839844
+        },
+        {
+          "dataset": "WikiText-103-raw",
+          "tokens": 365414,
+          "segments": 358,
+          "bytes": 1296370,
+          "total_negative_log_likelihood_nats": 1064325.0014648438,
+          "cross_entropy_nats_per_token": 2.912655238892992,
+          "token_perplexity": 18.40560502024533,
+          "bits_per_byte": 1.1844584505252889,
+          "byte_perplexity": 2.2727806447225283,
+          "tokens_per_byte": 0.28187477340574063,
+          "elapsed_seconds": 4.330444072955288,
+          "tokens_per_second": 84382.56997292778,
+          "peak_cuda_memory_gib": 2.4592857360839844
+        }
+      ]
+    },
+    {
+      "name": "TinyLlama-1.1B-3T",
+      "metadata": {
+        "type": "huggingface",
+        "repository": "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
+        "revision": "59f6f375b26bde864a6ca194a9a3044570490064",
+        "parameters": 1100048384,
+        "vocabulary_size": 32000
+      },
+      "results": [
+        {
+          "dataset": "WikiText-2-raw",
+          "tokens": 341468,
+          "segments": 334,
+          "bytes": 1296370,
+          "total_negative_log_likelihood_nats": 738039.5415039062,
+          "cross_entropy_nats_per_token": 2.161372490259428,
+          "token_perplexity": 8.683046881214485,
+          "bits_per_byte": 0.8213442045925545,
+          "byte_perplexity": 1.7670516437063264,
+          "tokens_per_byte": 0.26340319507548,
+          "elapsed_seconds": 4.201049832045101,
+          "tokens_per_second": 81281.5876153916,
+          "peak_cuda_memory_gib": 3.280660629272461
+        },
+        {
+          "dataset": "WikiText-103-raw",
+          "tokens": 341468,
+          "segments": 334,
+          "bytes": 1296370,
+          "total_negative_log_likelihood_nats": 738039.5415039062,
+          "cross_entropy_nats_per_token": 2.161372490259428,
+          "token_perplexity": 8.683046881214485,
+          "bits_per_byte": 0.8213442045925545,
+          "byte_perplexity": 1.7670516437063264,
+          "tokens_per_byte": 0.26340319507548,
+          "elapsed_seconds": 4.135314021958038,
+          "tokens_per_second": 82573.65660427346,
+          "peak_cuda_memory_gib": 3.280660629272461
+        }
+      ]
+    },
+    {
+      "name": "OLMo-1B",
+      "metadata": {
+        "type": "huggingface",
+        "repository": "allenai/OLMo-1B-hf",
+        "revision": "aee7752d9c08ee4775e9b0091426d8410e8f6a89",
+        "parameters": 1176764416,
+        "vocabulary_size": 50280
+      },
+      "results": [
+        {
+          "dataset": "WikiText-2-raw",
+          "tokens": 288730,
+          "segments": 283,
+          "bytes": 1296370,
+          "total_negative_log_likelihood_nats": 755879.0029296875,
+          "cross_entropy_nats_per_token": 2.617944110171051,
+          "token_perplexity": 13.707513459057958,
+          "bits_per_byte": 0.841197257757241,
+          "byte_perplexity": 1.791536277787835,
+          "tokens_per_byte": 0.22272190809722534,
+          "elapsed_seconds": 3.9472831879975274,
+          "tokens_per_second": 73146.51274019027,
+          "peak_cuda_memory_gib": 4.120820999145508
+        },
+        {
+          "dataset": "WikiText-103-raw",
+          "tokens": 288730,
+          "segments": 283,
+          "bytes": 1296370,
+          "total_negative_log_likelihood_nats": 755879.0029296875,
+          "cross_entropy_nats_per_token": 2.617944110171051,
+          "token_perplexity": 13.707513459057958,
+          "bits_per_byte": 0.841197257757241,
+          "byte_perplexity": 1.791536277787835,
+          "tokens_per_byte": 0.22272190809722534,
+          "elapsed_seconds": 3.951668716967106,
+          "tokens_per_second": 73065.33535068178,
+          "peak_cuda_memory_gib": 4.120820999145508
+        }
+      ]
+    },
+    {
+      "name": "SmolLM2-1.7B",
+      "metadata": {
+        "type": "huggingface",
+        "repository": "HuggingFaceTB/SmolLM2-1.7B",
+        "revision": "effd688a12921b4cc83e3312b6feb579f70f9c71",
+        "parameters": 1711376384,
+        "vocabulary_size": 49152
+      },
+      "results": [
+        {
+          "dataset": "WikiText-2-raw",
+          "tokens": 304986,
+          "segments": 299,
+          "bytes": 1296370,
+          "total_negative_log_likelihood_nats": 679746.681640625,
+          "cross_entropy_nats_per_token": 2.228779949376775,
+          "token_perplexity": 9.288526690798095,
+          "bits_per_byte": 0.7564716606089764,
+          "byte_perplexity": 1.6893539854477835,
+          "tokens_per_byte": 0.23526153798684019,
+          "elapsed_seconds": 5.9134932400193065,
+          "tokens_per_second": 51574.59180574024,
+          "peak_cuda_memory_gib": 5.071691513061523
+        },
+        {
+          "dataset": "WikiText-103-raw",
+          "tokens": 304986,
+          "segments": 299,
+          "bytes": 1296370,
+          "total_negative_log_likelihood_nats": 679746.681640625,
+          "cross_entropy_nats_per_token": 2.228779949376775,
+          "token_perplexity": 9.288526690798095,
+          "bits_per_byte": 0.7564716606089764,
+          "byte_perplexity": 1.6893539854477835,
+          "tokens_per_byte": 0.23526153798684019,
+          "elapsed_seconds": 5.942804269026965,
+          "tokens_per_second": 51320.216213335996,
+          "peak_cuda_memory_gib": 5.071691513061523
+        }
+      ]
+    },
+    {
+      "name": "Qwen2.5-1.5B",
+      "metadata": {
+        "type": "huggingface",
+        "repository": "Qwen/Qwen2.5-1.5B",
+        "revision": "8faed761d45a263340a0528343f099c05c9a4323",
+        "parameters": 1543714304,
+        "vocabulary_size": 151665
+      },
+      "results": [
+        {
+          "dataset": "WikiText-2-raw",
+          "tokens": 299078,
+          "segments": 293,
+          "bytes": 1296370,
+          "total_negative_log_likelihood_nats": 704810.1691894531,
+          "cross_entropy_nats_per_token": 2.356609878324227,
+          "token_perplexity": 10.55510763013647,
+          "bits_per_byte": 0.7843641366721965,
+          "byte_perplexity": 1.7223330392100313,
+          "tokens_per_byte": 0.2307041971042218,
+          "elapsed_seconds": 5.866887029958889,
+          "tokens_per_second": 50977.28974033027,
+          "peak_cuda_memory_gib": 8.67821979522705
+        },
+        {
+          "dataset": "WikiText-103-raw",
+          "tokens": 299078,
+          "segments": 293,
+          "bytes": 1296370,
+          "total_negative_log_likelihood_nats": 704810.1691894531,
+          "cross_entropy_nats_per_token": 2.356609878324227,
+          "token_perplexity": 10.55510763013647,
+          "bits_per_byte": 0.7843641366721965,
+          "byte_perplexity": 1.7223330392100313,
+          "tokens_per_byte": 0.2307041971042218,
+          "elapsed_seconds": 5.894993479014374,
+          "tokens_per_second": 50734.23763142228,
+          "peak_cuda_memory_gib": 8.67821979522705
+        }
+      ]
+    }
+  ],
+  "generated_at": "2026-08-17T12:49:30.811119+08:00"
+}

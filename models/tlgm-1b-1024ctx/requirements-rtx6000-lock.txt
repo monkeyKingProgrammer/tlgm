@@ -1,0 +1,13 @@
+# Exact direct dependencies used on the RTX PRO 6000 training host on 2026-08-12.
+# Install the CUDA-enabled PyTorch wheel from the matching PyTorch cu128 index.
+torch==2.11.0+cu128
+tokenizers==0.22.2
+transformers==5.14.1
+datasets==5.0.0
+huggingface_hub==1.24.0
+PyYAML==6.0.3
+tqdm==4.69.1
+numpy==2.4.4
+tensorboard==2.21.0
+pytest==9.1.1
+matplotlib==3.10.5

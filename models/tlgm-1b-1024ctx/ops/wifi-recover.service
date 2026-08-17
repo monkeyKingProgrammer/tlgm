@@ -1,0 +1,9 @@
+[Unit]
+Description=Recover the RTX6000 workstation Wi-Fi connection
+Wants=NetworkManager.service
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/default/tlgm-wifi-recover
+ExecStart=/usr/local/sbin/wifi-recover

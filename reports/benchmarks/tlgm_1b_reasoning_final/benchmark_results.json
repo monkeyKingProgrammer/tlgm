@@ -1,0 +1,218 @@
+{
+  "protocol": "zero-shot conditional continuation log-likelihood",
+  "checkpoint": "/home/user/minimind/tlgm_1b_1024ctx/checkpoints/tlgm_1b_1024ctx_sft_reasoning_3day.pth",
+  "checkpoint_metadata": {
+    "step": 120000,
+    "max_steps": 120000,
+    "last_loss": 1.104241043329239,
+    "last_lr": 5e-08,
+    "tokens_per_step": 65536,
+    "total_tokens_trained": 7864320000,
+    "total_seen_tokens": 7864320000,
+    "total_supervised_tokens": 2677269185,
+    "total_context_positions": 7864320000,
+    "total_nonpad_input_tokens": 4136722089,
+    "nonpad_counter_start_step": 5500,
+    "cumulative_gpu_time_seconds": 319233.216547727,
+    "cumulative_gpu_time_hours": 88.67589348547972,
+    "architecture": "TLGM lower-triangular causal sequence mixer",
+    "best_validation_loss": 1.0480410290134043,
+    "checkpoint_model_dtype": "float32",
+    "session_id": "20b0c80a608e41818373efa9225a5253",
+    "stop_signal": null,
+    "data_fingerprint": "d7d58e4cb98884f83f42c95e389a58ac9f9ebdb4dbf632614b8aadb5606e9025"
+  },
+  "model_config": {
+    "vocab_size": 8192,
+    "context_length": 1024,
+    "embed_dim": 2048,
+    "model_dim": 2048,
+    "num_global_blocks": 27,
+    "local_hidden_dim": 8192,
+    "feature_hidden_dim": 8192,
+    "dropout": 0.0,
+    "pad_token_id": 0,
+    "bos_token_id": 1,
+    "eos_token_id": 2,
+    "unk_token_id": 3,
+    "tie_embeddings": true,
+    "initializer_range": 0.02,
+    "scale_residual_projections": true
+  },
+  "parameter_count": 1015592960,
+  "tasks": [
+    "arc_easy",
+    "hellaswag",
+    "piqa",
+    "boolq",
+    "winogrande",
+    "openbookqa",
+    "truthfulqa_mc1"
+  ],
+  "dtype": "bfloat16",
+  "eval_batch_size": 8,
+  "max_length": 1024,
+  "seed": 2026,
+  "python": "3.12.3",
+  "torch": "2.11.0+cu128",
+  "device": "cuda:0",
+  "device_name": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+  "evaluated_at": "2026-08-17 12:54:13 +0800",
+  "aggregate": {
+    "questions": 20110,
+    "tasks": 7,
+    "weighted_accuracy": 0.4233217304823471,
+    "weighted_accuracy_normalized": 0.4397812033814023,
+    "macro_accuracy": 0.4237803520003887,
+    "macro_accuracy_normalized": 0.4392143989801074,
+    "task_results": [
+      {
+        "task": "arc_easy",
+        "description": "Grade-school science multiple choice",
+        "questions": 2376,
+        "choices_scored": 9501,
+        "accuracy": 0.5925925925925926,
+        "accuracy_normalized": 0.48947811447811446,
+        "accuracy_95ci": [
+          0.5728353913750821,
+          0.612349793810103
+        ],
+        "accuracy_normalized_95ci": [
+          0.46937762308404946,
+          0.5095786058721795
+        ],
+        "random_baseline": 0.25016133557800224,
+        "mean_target_tokens_per_choice": 5.413535417324492,
+        "elapsed_seconds": 12.693800614913926,
+        "questions_per_second": 187.17798333845275,
+        "peak_cuda_memory_gib": 4.212270736694336
+      },
+      {
+        "task": "hellaswag",
+        "description": "Commonsense event continuation",
+        "questions": 10042,
+        "choices_scored": 40168,
+        "accuracy": 0.32593108942441745,
+        "accuracy_normalized": 0.37353116908982276,
+        "accuracy_95ci": [
+          0.31676337649874364,
+          0.33509880235009126
+        ],
+        "accuracy_normalized_95ci": [
+          0.3640696881140741,
+          0.3829926500655714
+        ],
+        "random_baseline": 0.25,
+        "mean_target_tokens_per_choice": 37.58877713602868,
+        "elapsed_seconds": 89.22951170394663,
+        "questions_per_second": 112.54124121308894,
+        "peak_cuda_memory_gib": 4.207690238952637
+      },
+      {
+        "task": "piqa",
+        "description": "Physical commonsense reasoning",
+        "questions": 1838,
+        "choices_scored": 3676,
+        "accuracy": 0.6648531011969532,
+        "accuracy_normalized": 0.6637649619151251,
+        "accuracy_95ci": [
+          0.6432724885395308,
+          0.6864337138543756
+        ],
+        "accuracy_normalized_95ci": [
+          0.642167040150865,
+          0.6853628836793852
+        ],
+        "random_baseline": 0.5,
+        "mean_target_tokens_per_choice": 28.081610446137105,
+        "elapsed_seconds": 6.1362339640036225,
+        "questions_per_second": 299.5322555792488,
+        "peak_cuda_memory_gib": 4.214093208312988
+      },
+      {
+        "task": "boolq",
+        "description": "Passage-based yes/no reading comprehension",
+        "questions": 3270,
+        "choices_scored": 6540,
+        "accuracy": 0.5324159021406728,
+        "accuracy_normalized": 0.5324159021406728,
+        "accuracy_95ci": [
+          0.5153142695988058,
+          0.5495175346825398
+        ],
+        "accuracy_normalized_95ci": [
+          0.5153142695988058,
+          0.5495175346825398
+        ],
+        "random_baseline": 0.5,
+        "mean_target_tokens_per_choice": 1.0,
+        "elapsed_seconds": 26.65303136408329,
+        "questions_per_second": 122.68773316368583,
+        "peak_cuda_memory_gib": 4.663365840911865
+      },
+      {
+        "task": "winogrande",
+        "description": "Pronoun and commonsense resolution",
+        "questions": 1267,
+        "choices_scored": 2534,
+        "accuracy": 0.510655090765588,
+        "accuracy_normalized": 0.5311760063141279,
+        "accuracy_95ci": [
+          0.48312934247716816,
+          0.5381808390540079
+        ],
+        "accuracy_normalized_95ci": [
+          0.5036975770564718,
+          0.558654435571784
+        ],
+        "random_baseline": 0.5,
+        "mean_target_tokens_per_choice": 27.94238358326756,
+        "elapsed_seconds": 4.182912604068406,
+        "questions_per_second": 302.8989892754833,
+        "peak_cuda_memory_gib": 4.136935234069824
+      },
+      {
+        "task": "openbookqa",
+        "description": "Open-book elementary science multiple choice",
+        "questions": 500,
+        "choices_scored": 2000,
+        "accuracy": 0.176,
+        "accuracy_normalized": 0.314,
+        "accuracy_95ci": [
+          0.1426196405531636,
+          0.2093803594468364
+        ],
+        "accuracy_normalized_95ci": [
+          0.2733184069535127,
+          0.3546815930464873
+        ],
+        "random_baseline": 0.25,
+        "mean_target_tokens_per_choice": 4.258,
+        "elapsed_seconds": 2.270932763000019,
+        "questions_per_second": 220.17384580751494,
+        "peak_cuda_memory_gib": 4.108058452606201
+      },
+      {
+        "task": "truthfulqa_mc1",
+        "description": "Truthfulness against common misconceptions",
+        "questions": 817,
+        "choices_scored": 4114,
+        "accuracy": 0.16401468788249693,
+        "accuracy_normalized": 0.1701346389228886,
+        "accuracy_95ci": [
+          0.13862334106015453,
+          0.18940603470483933
+        ],
+        "accuracy_normalized_95ci": [
+          0.14436874386499648,
+          0.19590053398078072
+        ],
+        "random_baseline": 0.22605616877342646,
+        "mean_target_tokens_per_choice": 12.51166747690812,
+        "elapsed_seconds": 5.352869302034378,
+        "questions_per_second": 152.6284229823239,
+        "peak_cuda_memory_gib": 4.12530517578125
+      }
+    ]
+  }
+}

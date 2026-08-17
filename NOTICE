@@ -1,0 +1,11 @@
+TLGM
+Copyright 2026 monkeyKingProgrammer
+
+The MiniMind comparison baseline and related interoperability scripts are
+based in part on concepts and interfaces from the MiniMind project:
+https://github.com/jingyaogong/minimind
+MiniMind is distributed under the Apache License 2.0.
+
+Dataset names and project names referenced in documentation remain the
+property of their respective owners. No upstream raw dataset is redistributed
+in this repository.

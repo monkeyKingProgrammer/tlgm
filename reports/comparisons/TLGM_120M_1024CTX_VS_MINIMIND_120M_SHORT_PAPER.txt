@@ -1,0 +1,403 @@
+TLGM-120M-1024 versus MiniMind-120M:
+A Controlled Comparison of Two Small Language Models Trained on an RTX 4060 Ti
+
+Technical report
+Prepared: 29 July 2026
+
+
+ABSTRACT
+
+This report compares two approximately 120-million-parameter causal language
+models built and trained locally on one NVIDIA RTX 4060 Ti 16 GB GPU:
+MiniMind-120M and TLGM-120M-1024. MiniMind is a conventional decoder-only
+Transformer with grouped-query causal self-attention. TLGM (Token-Local
+Global-Mixing) is an experimental non-attention architecture that replaces QKV
+attention with learned causal matrices that mix information along the token
+axis.
+
+Both models were pretrained from random initialization with a 1,024-token
+training context and a nominal budget of approximately 2.00 billion processed
+token positions. TLGM completed this phase in 23.70 hours, compared with 26.19
+hours for MiniMind. In the local batch-1 FP16 inference benchmark, TLGM was
+1.53 times faster for a 1,024-token prefill and 1.61 times faster while
+generating after a 1,024-token prompt, but it used about 17% more measured peak
+CUDA allocation during generation. These results apply to these implementations
+and this GPU; they do not establish a universal advantage for either
+architecture.
+
+The final chat checkpoints are not a controlled quality comparison. TLGM
+received 943.72 million nominal SFT token positions, 4.8 times MiniMind's
+196.61 million, and included several repeated repair and polish stages.
+Standardized accuracy, reasoning, and knowledge benchmarks were not recorded.
+The evidence supports conclusions about implementation, resource use, and
+training behavior, but not a claim that either model is generally more
+intelligent.
+
+
+1. SCOPE AND EXPERIMENTAL ARTIFACTS
+
+The comparison covers the locally completed RTX 4060 Ti training runs:
+
+  MiniMind project:
+  C:\Users\ADMIN\minimind\minimind_120m_tiny_chatgpt
+
+  MiniMind final chat checkpoint:
+  checkpoints\sft_120m_960_final.pth
+
+  TLGM project:
+  C:\Users\ADMIN\minimind\tlgm_120m_1024ctx
+
+  TLGM final local chat checkpoint:
+  checkpoints\tlgm_120m_1024ctx_sft_smarter.pth
+
+The later TLGM "knowledge3b" continuation is excluded because it was a separate,
+incomplete continuation associated with the RTX 6000 workstation rather than
+the completed RTX 4060 Ti experiment considered here.
+
+
+2. SUMMARY OF THE TWO MODELS
+
+Property                         MiniMind-120M              TLGM-120M-1024
+------------------------------   -------------------------  -------------------------
+Architecture                     Decoder Transformer        Token-axis global mixer
+Attention                        Causal GQA                  None
+QKV projections                  Yes                        No
+Exact parameters                 122,287,680                120,998,656
+Vocabulary                       6,400                      8,192
+Model width                      960                        768
+Main blocks                      10 Transformer blocks      16 TLGM global blocks
+Training context                 1,024 tokens               1,024 tokens
+Position representation          RoPE                       Learned absolute embedding
+Maximum configured positions     32,768                     1,024
+Generation cache                 KV cache                   None
+Weight tying                     Input/output tied          Input/output tied
+Training precision               FP16                       FP16
+Training GPU                     RTX 4060 Ti 16 GB          RTX 4060 Ti 16 GB
+
+The user's recollection is correct: the MiniMind run also used a 1,024-token
+training context. Its RoPE configuration can represent more positions in
+software, but this experiment trained and measured it at 1,024. Therefore,
+performance beyond 1,024 should not be assumed to be reliable.
+
+MiniMind contains 1,289,024 more parameters than TLGM, a difference of only
+1.07%. Parameter count is therefore closely matched.
+
+
+3. MINIMIND ARCHITECTURE
+
+MiniMind is an autoregressive, decoder-only Transformer. Token IDs are mapped to
+960-dimensional vectors by a 6,400-entry embedding table. The embedding is
+shared with the output language-model head.
+
+The hidden sequence passes through 10 identical causal Transformer blocks. Each
+block contains:
+
+  1. RMS normalization with epsilon 1e-6.
+  2. Grouped-query causal self-attention.
+  3. A residual connection.
+  4. A second RMS normalization.
+  5. A gated feed-forward network.
+  6. A second residual connection.
+
+Attention uses 10 query heads and 5 key/value heads. With model width 960, each
+head has dimension 96. Two query heads therefore share each key/value head.
+This grouped-query design reduces key/value projection and cache size relative
+to full multi-head attention. Rotary position embeddings use theta 1,000,000.
+The implementation can use PyTorch scaled-dot-product/Flash attention when the
+installed software and GPU path support it.
+
+The feed-forward sublayer has width 3,072 and uses a SwiGLU-style computation:
+SiLU(gate projection) multiplied elementwise by an up projection, followed by a
+down projection to width 960. The model is dense; mixture-of-experts support was
+disabled.
+
+During cached decoding, each new token can reuse keys and values computed for
+earlier tokens. This is an important structural advantage for long
+autoregressive generation, even though cache storage grows with context length.
+
+
+4. TLGM ARCHITECTURE
+
+TLGM is also causal and autoregressive, but it is not a Transformer and does
+not compute attention scores. It has no queries, keys, values, softmax
+attention, or KV cache.
+
+Input token IDs use an 8,192-entry embedding table with width 768. Learned
+absolute position vectors of shape 1,024 by 768 are added to the token
+embeddings. A shared local encoder applies a 768-to-3,072 projection, GELU,
+a 3,072-to-768 projection, and normalization.
+
+The sequence then passes through 16 global blocks. Each block has two forms of
+mixing:
+
+  1. Token mixing. Two learned 1,024-by-1,024 matrices are constrained to their
+     lower-triangular causal portions. They mix positions independently for
+     every feature channel, with GELU between the two operations. A position
+     can therefore receive information only from itself and earlier positions.
+
+  2. Feature mixing. A dense MLP maps 768 to 3,072, applies GELU, and maps back
+     to 768. Normalization and residual connections are used around the block
+     computations.
+
+After 16 blocks, final normalization is applied and logits are produced with
+the transposed input embedding matrix.
+
+Most TLGM parameters are in the global blocks:
+
+  Token embedding                       6,291,456
+  Position embedding                      786,432
+  Shared local encoder                  4,723,968
+  Sixteen global mixers               109,195,264
+  Final normalization                      1,536
+  Total                               120,998,656
+
+The causal token-mixing weights depend on position but not on the current token
+content. This is fundamentally different from attention, whose mixing weights
+are dynamically derived from content. TLGM is simple and fast in this local
+implementation, but its learned 1,024-by-1,024 matrices also bind it directly
+to a 1,024-position design. Increasing its context requires resizing and
+training substantially larger sequence-mixing matrices.
+
+Because TLGM has no KV cache, the current implementation recomputes the
+retained context during autoregressive generation. That can become increasingly
+disadvantageous as context and output length grow, even though TLGM was faster
+at the lengths measured here.
+
+
+5. TOKENIZATION AND PRETRAINING DATA
+
+MiniMind reused the tokenizer expected by the official MiniMind codebase. It
+has a vocabulary of 6,400 tokens and uses the repository's chat template.
+
+TLGM used a separately trained byte-level BPE tokenizer with 8,192 entries.
+Its special IDs are PAD=0, BOS=1, EOS=2, and UNK=3. Byte-level fallback allows
+arbitrary input text to be represented, although token efficiency differs from
+MiniMind's tokenizer.
+
+Both models were derived from the same prepared public English document pool:
+
+Source                                           Share    Selected source tokens
+-----------------------------------------------  -------  ----------------------
+SmolLM FineWeb-Edu deduplicated                   40%          800,000,560
+SmolLM Cosmopedia v2                             20%          400,000,187
+English Wikipedia, 2023-11-01                    15%          300,001,101
+TinyStories                                      10%          200,000,177
+FineWeb sample-10BT                              10%          200,000,096
+CodeParrot GitHub code clean                      5%          100,003,644
+Total                                           100%        2,000,005,765
+
+The selection contained 2,134,343 source rows. TLGM retokenized this material
+with its own tokenizer and produced a binary stream of exactly 2,000,000,000
+uint16 token IDs. Consequently, the source documents and high-level mixture
+were shared, but the exact token boundaries and sampled stream were not
+identical.
+
+"Tokens trained" in the run logs means nominal processed token positions:
+optimizer steps multiplied by micro-batch, gradient accumulation, and context
+length. This count can include padding and repeated examples and should not be
+interpreted as the number of unique natural-language tokens.
+
+
+6. PRETRAINING PROCEDURE AND RESULTS
+
+Both models began with randomly initialized weights. Neither run loaded a
+pretrained language-model checkpoint. The common schedule was:
+
+  Context length                    1,024
+  Effective token batch            65,536 positions per optimizer step
+  Optimizer steps                   30,518
+  Nominal processed positions       2,000,027,648
+  Initial peak learning rate        3e-4
+  Warmup                            1,000 steps
+  Precision                         FP16
+  Device                            one RTX 4060 Ti 16 GB
+
+MiniMind used micro-batch 2 and 32 accumulation steps. TLGM used micro-batch 1
+and 64 accumulation steps. Both therefore had the same nominal effective token
+batch.
+
+Metric                            MiniMind-120M       TLGM-120M-1024
+--------------------------------  ------------------  ------------------
+Elapsed pretraining time          26.19 hours         23.70 hours
+Average throughput                21,217 tokens/s     23,443 tokens/s
+Average optimizer-step time       3.09 s              2.80 s
+Last logged pretraining loss      1.4556              3.9847
+
+TLGM processed approximately 10.5% more token positions per second and required
+2.49 fewer hours, or 9.5% less elapsed time.
+
+The loss values must not be used as a direct architecture ranking. Cross-entropy
+depends strongly on vocabulary, token segmentation, data packing, and
+implementation details. MiniMind used 6,400 tokens while TLGM used 8,192.
+Only loss curves within the same model and tokenizer are directly comparable.
+
+
+7. SUPERVISED CHAT TRAINING
+
+The principal broad chat file had 217,172 conversations. It combined targeted
+handwritten examples with capped samples from Alpaca, Databricks Dolly, and
+UltraChat. Its construction limits were approximately 52,000 Alpaca,
+15,000 Dolly, and 150,000 UltraChat records, plus local targeted examples.
+
+A deterministic repair set contained 750,500 short examples emphasizing
+greetings, basic arithmetic, country capitals, simple definitions, and
+appropriate uncertainty. TLGM also used a 7,000-row polish set. Both SFT
+loaders trained only on assistant-answer spans while retaining the user and
+system text as context.
+
+The completed schedules were:
+
+MiniMind:
+  Broad SFT                     5,000 steps     163,840,000 positions
+  Repair SFT                    1,000 steps      32,768,000 positions
+  Total SFT                     6,000 steps     196,608,000 positions
+  Measured SFT time                                3.00 hours
+
+TLGM:
+  Initial broad SFT             3,000 steps     196,608,000 positions
+  Initial repair                1,000 steps      65,536,000 positions
+  Initial polish                  600 steps      39,321,600 positions
+  Continued broad SFT           8,000 steps     524,288,000 positions
+  Continued repair              1,500 steps      98,304,000 positions
+  Final polish                    300 steps      19,660,800 positions
+  Total SFT                    14,400 steps     943,718,400 positions
+  Measured SFT time                               10.90 hours
+
+TLGM therefore received 4.8 times as many nominal SFT positions. Total measured
+training time, including pretraining and all listed SFT stages, was 29.18 hours
+for MiniMind and 34.59 hours for TLGM.
+
+Very low final loss on a small repeated repair or polish set is evidence that
+the model fit that set; it is not evidence of broad intelligence. In
+particular, TLGM's near-zero polish loss indicates a significant memorization
+risk. A fair final chat comparison would require the same tokenizer-normalized
+data budget, matched update schedule, held-out prompts, and independent
+benchmarks.
+
+
+8. MEASURED RTX 4060 TI INFERENCE PERFORMANCE
+
+Existing local measurements used batch size 1 and FP16. Peak CUDA allocation
+is shown rather than total process VRAM reserved by PyTorch.
+
+Forward/prefill:
+
+Sequence     MiniMind latency   TLGM latency   TLGM speed ratio
+-----------  -----------------  -------------  ----------------
+128 tokens   12.11 ms           6.99 ms        1.73x faster
+512 tokens   10.00 ms           6.29 ms        1.59x faster
+1,024 tokens 12.91 ms           8.41 ms        1.53x faster
+
+Generation of 50 new tokens:
+
+Prompt       MiniMind rate      TLGM rate      TLGM speed ratio
+-----------  -----------------  -------------  ----------------
+128 tokens   70.0 tokens/s      144.8 tokens/s 2.07x faster
+512 tokens   67.1 tokens/s      153.1 tokens/s 2.28x faster
+1,024 tokens 68.1 tokens/s      109.9 tokens/s 1.61x faster
+
+Measured peak CUDA allocation:
+
+Workload                         MiniMind       TLGM           TLGM difference
+-------------------------------  -------------  -------------  ---------------
+Prefill, 128 tokens              264.5 MB       334.8 MB       +26.6%
+Prefill, 512 tokens              274.2 MB       342.4 MB       +24.9%
+Prefill, 1,024 tokens            286.4 MB       351.9 MB       +22.9%
+Generate 50, prompt 128          262.8 MB       335.2 MB       +27.5%
+Generate 50, prompt 512          283.5 MB       346.6 MB       +22.3%
+Generate 50, prompt 1,024        312.3 MB       365.3 MB       +17.0%
+
+At the longest measured generation case, MiniMind allocated about 0.305 GiB
+and TLGM about 0.357 GiB. TLGM was faster but used approximately 17% more peak
+allocated CUDA memory. These are implementation-level measurements, not
+theoretical minima. PyTorch version, kernels, warmup, synchronization,
+generation code, and whether cache paths are active can materially change the
+numbers.
+
+
+9. CHECKPOINT STORAGE
+
+The final MiniMind checkpoint is 256,900,843 bytes, approximately 245 MiB. The
+TLGM checkpoint is 1,222,827,698 bytes, approximately 1,166 MiB. The TLGM file
+is 4.76 times larger.
+
+This does not mean TLGM has 4.76 times more model weights or needs 4.76 times
+more inference memory. The models have nearly equal parameter counts. The
+difference results primarily from checkpoint contents and serialization:
+TLGM's resumable checkpoint includes training state such as optimizer tensors,
+whereas the cited MiniMind final checkpoint is a compact model checkpoint.
+For deployment, TLGM should be exported as weights-only FP16; approximately
+121 million FP16 parameters require about 231 MiB before runtime buffers.
+
+
+10. PRACTICAL STRENGTHS AND LIMITATIONS
+
+MiniMind strengths:
+
+  - Content-dependent attention is a proven mechanism for retrieval and
+    long-range interaction.
+  - Grouped-query attention reduces KV cost.
+  - KV caching gives a strong asymptotic advantage for long generation.
+  - RoPE and standard Transformer tooling make extension, optimization, and
+    deployment easier.
+  - The final chat model required much less SFT compute in this experiment.
+
+MiniMind limitations:
+
+  - Attention is more complex and was slower in the measured local kernels.
+  - KV cache consumes memory as context and batch size grow.
+  - A 120M model pretrained on 2B tokens remains severely capacity-limited.
+
+TLGM strengths:
+
+  - It avoids QKV projections, attention-score materialization, and softmax.
+  - Its causal operations are direct and comparatively easy to inspect.
+  - It trained about 10.5% faster and produced higher measured inference
+    throughput in the tested implementation.
+  - It demonstrates that a non-attention 121M model can learn causal language
+    modeling and useful short chat behavior.
+
+TLGM limitations:
+
+  - Token-mixing weights are position-specific and content-independent.
+  - Learned 1,024-square matrices hard-code the design context and scale
+    quadratically in parameters when context is enlarged.
+  - There is no KV cache; generation recomputes context.
+  - It used more measured CUDA allocation in every recorded inference case.
+  - Its final behavior is confounded by a much larger, repetitive SFT budget.
+  - The architecture has far less external optimization and deployment support
+    than a standard Transformer.
+
+
+11. CONCLUSION
+
+These experiments produced two real, independently initialized language models
+of nearly equal parameter count and the same 1,024-token training context on a
+single consumer GPU. TLGM was the faster local implementation: its 2B-position
+pretraining run was 9.5% shorter, and its measured batch-1 inference was
+1.5-2.3 times faster over the tested cases. It did not win on measured peak
+inference allocation, and its fixed token-mixing matrices and lack of a KV
+cache impose important scaling limitations.
+
+MiniMind is the safer architecture for conventional language-model development:
+it uses content-dependent attention, established positional methods, and cached
+decoding. TLGM is the more experimental result and is valuable chiefly as a
+compact study of whether fixed causal token mixing can replace attention at
+small scale.
+
+No controlled evidence from these runs shows that either model matches a
+0.8B- or 1B-parameter language model. Both are educational 120M-class systems
+with limited factual storage, reasoning, coding ability, and robustness.
+Determining which final checkpoint is more useful requires a common held-out
+evaluation suite covering perplexity, exact-answer knowledge, arithmetic,
+instruction following, repetition, hallucination, and generation latency.
+
+
+REPRODUCIBILITY NOTE
+
+Reported figures were reconstructed from the local configurations, checkpoint
+metadata, training logs, dataset manifests, parameter estimators, and existing
+RTX 4060 Ti benchmark outputs in C:\Users\ADMIN\minimind. CPU model and exact
+software-version snapshots were not preserved in the compared result summaries
+and are therefore not invented here. System memory for the workstation was
+32 GB; the common accelerator was an RTX 4060 Ti with 16 GB VRAM.

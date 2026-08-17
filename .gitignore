@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Credentials and machine-specific access files
+*.ppk
+*.pem
+*.key
+.env
+.env.*
+RTX6000*
+
+# Model checkpoints and optimizer states belong in GitHub Releases, not Git
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.gguf
+
+# Generated and downloaded training data
+data/raw/
+data/processed/
+*.bin
+*.mmap
+*.parquet
+*.arrow
+
+# Runtime output not intentionally copied into reports/
+outputs/
+remote_logs/
+runs/
+tensorboard*/
+events.out.tfevents.*
+
+# Temporary files
+*.tmp
+*.part
+*.log

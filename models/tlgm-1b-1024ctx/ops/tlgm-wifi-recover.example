@@ -1,0 +1,6 @@
+# Install as /etc/default/tlgm-wifi-recover and replace both values.
+WIFI_DEVICE=wlan0
+WIFI_CONNECTION_UUID=replace-with-nmcli-connection-uuid
+
+# Optional. When omitted, the script uses the active default gateway.
+# WIFI_GATEWAY=192.168.1.1

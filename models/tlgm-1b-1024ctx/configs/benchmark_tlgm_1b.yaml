@@ -1,0 +1,20 @@
+model_config: configs/sft_tlgm_1b_polish.yaml
+checkpoint: checkpoints/tlgm_1b_1024ctx_sft_final.pth
+tokenizer_dir: tokenizer
+benchmark_dir: data/benchmarks
+output_dir: outputs/benchmarks/tlgm_1b_final
+
+device: cuda
+dtype: float16
+eval_batch_size: 8
+max_length: 1024
+seed: 2026
+
+tasks:
+  - arc_easy
+  - hellaswag
+  - piqa
+  - boolq
+  - winogrande
+  - openbookqa
+  - truthfulqa_mc1

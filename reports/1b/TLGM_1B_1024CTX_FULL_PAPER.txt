@@ -1,0 +1,3157 @@
+TLGM-1B-1024
+TOKEN-LOCAL GLOBAL-MIXING AUTOREGRESSIVE LANGUAGE MODEL
+
+Complete Architecture, Model Card, Data, Training, Deployment, and
+Reproduction Specification
+
+Document version: 1.0
+Specification date: 2026-07-28
+Training-status snapshot: 2026-07-28 07:48:04 UTC+08:00
+
+
+======================================================================
+ABSTRACT
+======================================================================
+
+TLGM-1B-1024 is a decoder-only autoregressive language model with exactly
+1,015,592,960 unique trainable parameters and a maximum context length of
+1,024 tokens. TLGM means Token-Local Global-Mixing. It is an experimental
+alternative to a Transformer. It does not contain self-attention, query,
+key, or value projections, an attention softmax, a recurrent state, a
+convolution, a state-space block, or a key-value cache.
+
+The model represents text with an 8,192-entry byte-level byte-pair encoding
+(BPE) tokenizer. Input token and absolute-position embeddings have width
+2,048. A shared per-token encoder first transforms every token independently.
+Twenty-seven global mixing blocks then alternate between:
+
+  1. causal global mixing over sequence positions using learned
+     lower-triangular 1,024 by 1,024 matrices; and
+  2. nonlinear per-position feature mixing using 2,048 -> 8,192 -> 2,048
+     multilayer perceptrons.
+
+Residual connections and pre-normalization are used in both branches. A final
+LayerNorm feeds an output projection tied to the input token embedding.
+Standard one-token causal cross entropy trains position t to predict token
+t+1.
+
+The model is being trained entirely from random initialization. It does not
+use MiniMind, GPT, Llama, Qwen, or any other pretrained weights. Its
+pretraining stream contains exactly 20 billion project-tokenizer tokens from
+educational web text, synthetic educational material, English Wikipedia, and
+FineWeb-Edu. The pretraining schedule processes approximately 20 billion seen
+tokens. Three supervised fine-tuning stages are configured to follow
+pretraining automatically.
+
+At the status snapshot shown in this paper, the corrected production run had
+processed 993,918,976 tokens at 23,923 tokens per second on one NVIDIA RTX PRO
+6000 Blackwell Workstation Edition. The latest held-out loss was 3.27324 with
+perplexity 26.3968 at step 15,000. Pretraining was approximately 4.97 percent
+complete, with an estimated completion time of 2026-08-06 12:29 UTC+08:00.
+
+This document is intended to be sufficient for an engineer to recreate the
+architecture, tokenizer procedure, data pipeline, optimizer, checkpoint
+contract, supervised fine-tuning, inference loop, and single-GPU deployment
+without needing the original source repository.
+
+
+======================================================================
+1. MODEL CARD
+======================================================================
+
+1.1 Identity
+------------
+
+Model name:
+  TLGM-1B-1024
+
+Architecture name:
+  Token-Local Global-Mixing causal language model
+
+Architecture family:
+  Decoder-only autoregressive language model without attention
+
+Parameter count:
+  1,015,592,960 unique trainable parameters
+
+Maximum context:
+  1,024 project-tokenizer tokens
+
+Vocabulary:
+  8,192 byte-level BPE entries
+
+Training origin:
+  Random initialization
+
+Pretrained checkpoint origin:
+  None
+
+Primary implementation:
+  Python and PyTorch
+
+Training precision:
+  FP16 autocast with dynamic gradient scaling
+
+Primary training device:
+  One NVIDIA RTX PRO 6000 Blackwell Workstation Edition
+
+
+1.2 Intended purpose
+--------------------
+
+TLGM-1B-1024 is a research and learning model. It is intended to test whether
+fixed learned causal sequence-mixing matrices, combined with large per-token
+feature MLPs, can learn useful language behavior without content-dependent
+self-attention.
+
+The post-trained model is intended to support:
+
+  - short interactive conversation;
+  - short factual responses within learned knowledge;
+  - basic descriptions and explanations;
+  - elementary arithmetic patterns represented in SFT;
+  - short story generation;
+  - simple uncertainty responses;
+  - continuation and generation within a 1,024-token window.
+
+
+1.3 Out-of-scope uses
+---------------------
+
+The model is not designed or validated for:
+
+  - medical, legal, financial, or safety-critical advice;
+  - autonomous control;
+  - high-confidence factual research;
+  - secure code generation;
+  - long-document reasoning beyond 1,024 tokens;
+  - multilingual parity;
+  - private or confidential data processing without separate controls;
+  - matching a commercial 1B or larger Transformer solely from parameter
+    count.
+
+
+1.4 Training status at publication
+----------------------------------
+
+Pretraining:
+  Running
+
+SFT:
+  Configured but not yet started at the paper snapshot
+
+Final chat checkpoint:
+  Not yet produced at the paper snapshot
+
+Evaluation status:
+  Training and held-out language-model losses are available. A final chat
+  benchmark is not yet meaningful because SFT has not started.
+
+
+1.5 Expected limitations
+------------------------
+
+The final model will have important limitations:
+
+  - A 1B-parameter model is small by current general-purpose LLM standards.
+  - Twenty billion pretraining tokens are serious for this experiment but
+    far below the data budgets of major production models.
+  - Sequence routing is learned by position, not selected dynamically from
+    token content as in attention.
+  - The model cannot natively extrapolate beyond its trained 1,024 absolute
+    positions.
+  - Autoregressive decoding recomputes the retained context for each token.
+  - No KV cache is available.
+  - Knowledge can be incomplete, outdated, or incorrect.
+  - SFT can improve response style but cannot create knowledge absent from
+    pretraining.
+  - Repeated targeted SFT examples can produce memorization or answer
+    substitution if weighted too strongly.
+  - Dataset source material can contain biases, errors, or undesirable text.
+
+
+1.6 Safety and data statement
+-----------------------------
+
+This experiment uses public datasets identified later in this paper. Anyone
+recreating or distributing the model must independently review each upstream
+dataset license, terms of use, content policy, personal-information handling,
+and redistribution requirements. Public availability does not by itself
+guarantee that every downstream use is permitted.
+
+The model has no technical mechanism that guarantees truthfulness, privacy,
+fairness, or harmlessness. Generated text must be treated as untrusted.
+
+
+======================================================================
+2. DESIGN GOALS AND NON-GOALS
+======================================================================
+
+2.1 Design goals
+----------------
+
+The architecture was built around six goals:
+
+  1. Train a complete autoregressive language model from scratch.
+  2. Avoid Transformer self-attention and all QKV projections.
+  3. Preserve strict left-to-right causality.
+  4. Give every position access to all earlier positions in every global
+     block.
+  5. Keep implementation simple enough to inspect and reproduce.
+  6. Fit training on one large workstation GPU.
+
+
+2.2 Explicit non-components
+---------------------------
+
+TLGM-1B-1024 contains none of the following:
+
+  - multi-head attention;
+  - grouped-query attention;
+  - multi-query attention;
+  - query, key, and value tensors;
+  - rotary position embeddings;
+  - ALiBi;
+  - an attention mask applied to attention scores;
+  - an attention softmax;
+  - a Transformer decoder block;
+  - an RNN, LSTM, or GRU;
+  - a convolutional sequence layer;
+  - Mamba or another selective state-space layer;
+  - mixture-of-experts routing;
+  - retrieval augmentation;
+  - a key-value cache.
+
+
+2.3 Core architectural idea
+---------------------------
+
+The architecture separates two forms of processing:
+
+  Token-local feature processing:
+    Dense MLPs transform the 2,048 features at each position. These weights
+    are shared over positions but are different between blocks.
+
+  Global causal position processing:
+    A learned lower-triangular matrix mixes all earlier sequence positions
+    into each current position. The same position matrix is applied to every
+    feature channel.
+
+This is why the architecture is called Token-Local Global-Mixing.
+
+
+======================================================================
+3. NOTATION AND TENSOR CONVENTIONS
+======================================================================
+
+The following symbols are normative:
+
+  B    runtime microbatch size
+  N    runtime sequence length, 1 <= N <= 1024
+  C    maximum context length = 1024
+  V    vocabulary size = 8192
+  D_e  embedding width = 2048
+  D    model width = 2048
+  H    hidden MLP width = 8192
+  L    number of global blocks = 27
+
+Tensor layouts:
+
+  token IDs:       [B, N]
+  labels:          [B, N]
+  hidden states:   [B, N, D]
+  vocabulary logits:
+                    [B, N, V]
+  position matrix: [C, C]
+
+Indices:
+
+  b is a batch index.
+  n is a destination sequence position.
+  j is a source sequence position.
+  d is a feature index.
+  v is a vocabulary index.
+  l is a block index from 1 to 27.
+
+All sequence-index equations use zero-based positions.
+
+
+======================================================================
+4. TOKENIZATION
+======================================================================
+
+4.1 Tokenizer type
+------------------
+
+The tokenizer is a ByteLevelBPETokenizer implemented with the Hugging Face
+"tokenizers" library.
+
+Byte-level tokenization first represents text through a reversible byte
+alphabet. BPE training then repeatedly merges frequent adjacent symbols until
+the requested vocabulary size is reached. This has two useful properties:
+
+  - arbitrary input bytes can be represented;
+  - normal text can use multi-byte and multi-character subword tokens.
+
+The model does not use the tokenizer or vocabulary of another pretrained
+language model.
+
+The tokenizer constructor uses these exact options:
+
+  add_prefix_space:              false
+  lowercase:                     false
+  dropout:                       none
+  unicode_normalizer:            none
+  continuing_subword_prefix:     none
+  end_of_word_suffix:            none
+  trim_offsets:                  false
+
+
+4.2 Vocabulary and special tokens
+---------------------------------
+
+Requested and observed vocabulary size:
+  8192
+
+Minimum BPE merge frequency:
+  2
+
+Special tokens are registered in this exact order:
+
+  ID 0: <pad>
+  ID 1: <bos>
+  ID 2: <eos>
+  ID 3: <unk>
+
+These IDs must remain unchanged in every config, dataset, checkpoint, and
+inference program.
+
+
+4.3 Tokenizer training corpus
+-----------------------------
+
+The tokenizer-training utility constructs a temporary UTF-8 text file from
+up to 200,000 JSONL records. Each record must contain a "text" field. Embedded
+newlines are replaced with spaces and each source document is written as one
+line.
+
+The default source directory is an earlier public-text preparation containing
+the following document categories:
+
+  - SmolLM fineweb-edu-dedup;
+  - SmolLM cosmopedia-v2;
+  - English Wikipedia 20231101.en;
+  - TinyStories;
+  - FineWeb sample-10BT;
+  - codeparrot/github-code-clean.
+
+That earlier document pool used a 40/20/15/10/10/5 percent selection target.
+The BPE tokenizer itself is trained from scratch over extracted text. No
+pretrained token IDs or embedding weights are imported.
+
+
+4.4 Normative tokenizer construction
+-------------------------------------
+
+Equivalent Python:
+
+  from tokenizers import ByteLevelBPETokenizer
+
+  special = ["<pad>", "<bos>", "<eos>", "<unk>"]
+  tokenizer = ByteLevelBPETokenizer()
+  tokenizer.train(
+      files=["tokenizer_train.txt"],
+      vocab_size=8192,
+      min_frequency=2,
+      special_tokens=special,
+  )
+  tokenizer.save_model("tokenizer")
+
+This writes:
+
+  tokenizer/vocab.json
+  tokenizer/merges.txt
+
+The observed files in the current experiment are approximately:
+
+  vocab.json:  116,374 bytes
+  merges.txt:   67,380 bytes
+
+SHA-256:
+
+  vocab.json:
+    E4C5DADFA59E1059324269132827F4C548F3411C5409A90BDD0FEF0212A119D3
+
+  merges.txt:
+    4FF5482BA80A329A4F5FB50E5179460F3C97FE7DFE814AB4C0EB8C1183EADCE4
+
+For bit-for-bit checkpoint compatibility, the exact same vocab.json and
+merges.txt must be used. Training a new tokenizer by the same method creates
+an equivalent architecture but not necessarily token-ID-compatible
+checkpoints.
+
+
+4.5 Document and chat boundaries
+--------------------------------
+
+Pretraining documents are encoded as:
+
+  [<bos>] + BPE(document_text) + [<eos>]
+
+SFT conversations are encoded as:
+
+  <bos>
+  User: user text
+  Assistant: assistant text
+  <eos>
+
+The literal role strings and newlines are normal text processed by BPE.
+
+
+======================================================================
+5. COMPLETE MODEL CONFIGURATION
+======================================================================
+
+The exact configuration is:
+
+  vocab_size:                  8192
+  context_length:              1024
+  embed_dim:                   2048
+  model_dim:                   2048
+  num_global_blocks:           27
+  local_hidden_dim:            8192
+  feature_hidden_dim:          8192
+  dropout:                     0.0
+  pad_token_id:                0
+  bos_token_id:                1
+  eos_token_id:                2
+  unk_token_id:                3
+  tie_embeddings:              true
+  initializer_range:           0.02
+  scale_residual_projections:  true
+
+The embedding and model widths are equal, so the optional input projection is
+an identity operation with no parameters.
+
+All LayerNorm modules use PyTorch defaults:
+
+  epsilon:             1e-5
+  elementwise_affine:  true
+  bias:                true
+
+All GELU modules use the exact erf-based form:
+
+  approximate: "none"
+
+
+======================================================================
+6. END-TO-END MODEL GRAPH
+======================================================================
+
+The complete forward graph is:
+
+  input token IDs [B,N]
+            |
+            +-----------------------------+
+            |                             |
+            v                             v
+  token embedding [V,D]       position embedding [C,D]
+            |                             |
+            +------------ addition -------+
+                          |
+                    dropout, p=0
+                          |
+              shared token-local encoder
+             Linear 2048 -> 8192
+             GELU
+             dropout, p=0
+             Linear 8192 -> 2048
+             LayerNorm 2048
+                          |
+            +-------------+-------------+
+            | Global Mixing Block 1     |
+            +---------------------------+
+                          |
+                         ...
+                          |
+            +---------------------------+
+            | Global Mixing Block 27    |
+            +-------------+-------------+
+                          |
+                 final LayerNorm 2048
+                          |
+            tied embedding output projection
+                     2048 -> 8192
+                          |
+                logits [B,N,8192]
+
+Every global block has two residual sublayers:
+
+  A. token/position mixing:
+
+     x
+     |
+     LayerNorm
+     |
+     CausalSequenceLinear 1024
+     |
+     GELU
+     |
+     CausalSequenceLinear 1024
+     |
+     + residual x
+
+  B. feature mixing:
+
+     x_after_token_mix
+     |
+     LayerNorm
+     |
+     Linear 2048 -> 8192
+     |
+     GELU
+     |
+     Dropout(0)
+     |
+     Linear 8192 -> 2048
+     |
+     Dropout(0)
+     |
+     + residual x_after_token_mix
+
+
+======================================================================
+7. EMBEDDING LAYER
+======================================================================
+
+7.1 Learned tensors
+-------------------
+
+Token embedding:
+  shape [8192, 2048]
+
+Position embedding:
+  shape [1024, 2048]
+
+
+7.2 Forward operation
+---------------------
+
+For token ID T[b,n]:
+
+  X_embed[b,n,d] =
+      E_token[T[b,n],d] + E_position[n,d]
+
+The position vector is generated as:
+
+  positions = [0, 1, ..., N-1]
+
+The summed embedding passes through Dropout with probability zero. The
+dropout module remains in the graph but has no numerical effect under the
+current config.
+
+
+7.3 Parameters
+--------------
+
+Token embedding:
+
+  8192 * 2048 = 16,777,216
+
+Position embedding:
+
+  1024 * 2048 = 2,097,152
+
+Total embedding parameters:
+
+  18,874,368
+
+
+======================================================================
+8. SHARED TOKEN-LOCAL ENCODER
+======================================================================
+
+8.1 Purpose
+-----------
+
+This module performs a nonlinear transformation at each token position before
+global sequence mixing begins. It does not communicate between positions.
+The same encoder parameters are shared over all positions and all examples.
+
+
+8.2 Operation
+-------------
+
+For every [b,n] independently:
+
+  A = W1 X_embed + b1
+  B = GELU(A)
+  C = W2 B + b2
+  X0 = LayerNorm(C)
+
+Shapes:
+
+  W1: [8192, 2048]
+  b1: [8192]
+  W2: [2048, 8192]
+  b2: [2048]
+  LayerNorm scale: [2048]
+  LayerNorm bias:  [2048]
+
+
+8.3 Parameters
+--------------
+
+  first weight:    2048 * 8192 = 16,777,216
+  first bias:                         8,192
+  second weight:   8192 * 2048 = 16,777,216
+  second bias:                        2,048
+  LayerNorm:       2 * 2048 =         4,096
+  total:                         33,568,768
+
+
+======================================================================
+9. CAUSAL SEQUENCE LINEAR OPERATOR
+======================================================================
+
+9.1 Learned state
+-----------------
+
+One CausalSequenceLinear layer has:
+
+  weight W: [1024, 1024]
+  bias b:   [1024]
+
+It also constructs a non-trainable lower-triangular mask M:
+
+  M[n,j] = 1 if j <= n
+           0 if j > n
+
+M is a deterministic, non-persistent buffer. It is reconstructed with the
+model and is not saved in checkpoints.
+
+
+9.2 Runtime slicing
+-------------------
+
+For a runtime length N <= 1024:
+
+  A = W[0:N,0:N] elementwise-multiplied by M[0:N,0:N]
+  c = b[0:N]
+
+
+9.3 Forward equation
+--------------------
+
+Input X and output Y both have shape [B,N,D].
+
+  Y[b,n,d] = c[n] + sum over j=0..n of A[n,j] X[b,j,d]
+
+Equivalent einsum:
+
+  Y = einsum("bjd,nj->bnd", X, A) + c[None,:,None]
+
+The same A is used for every batch item and every feature channel.
+
+
+9.4 Causality
+-------------
+
+Because A[n,j] is exactly zero for j > n, output position n cannot depend on
+future input positions. Composition with position-wise LayerNorm, GELU,
+feature MLPs, and residual additions preserves this property. Therefore every
+network output at position n is a function only of tokens at positions
+0 through n.
+
+
+9.5 Difference from attention
+-----------------------------
+
+Attention computes content-dependent routing coefficients from Q and K
+features. This operator instead learns one fixed routing matrix per layer:
+
+  - coefficients depend on source and destination positions;
+  - coefficients do not depend on current token content;
+  - all feature channels share the same position routing;
+  - there is no softmax normalization;
+  - there are no attention heads.
+
+Content still affects hidden values and all nonlinear feature processing, but
+it does not dynamically alter the sequence-routing coefficients.
+
+
+9.6 Parameter count
+-------------------
+
+One operator:
+
+  1024 * 1024 + 1024 = 1,049,600
+
+Two per global block:
+
+  2,099,200
+
+Fifty-four across 27 blocks:
+
+  56,678,400
+
+
+======================================================================
+10. GLOBAL MIXING BLOCK
+======================================================================
+
+10.1 Token-mixing branch
+------------------------
+
+Given block input X:
+
+  U = TokenLayerNorm(X)
+  P = TokenMix1(U)
+  Q = GELU(P)
+  R = TokenMix2(Q)
+  X_token = X + R
+
+TokenMix1 and TokenMix2 are independent CausalSequenceLinear modules.
+
+
+10.2 Feature-mixing branch
+--------------------------
+
+  S = FeatureLayerNorm(X_token)
+  T = W3 S + b3
+  U = GELU(T)
+  V = Dropout(U, p=0)
+  Z = W4 V + b4
+  Z = Dropout(Z, p=0)
+  Y = X_token + Z
+
+Shapes:
+
+  W3: [8192, 2048]
+  b3: [8192]
+  W4: [2048, 8192]
+  b4: [2048]
+
+
+10.3 Per-block parameters
+-------------------------
+
+Two sequence operators:
+
+  2 * (1024*1024 + 1024) = 2,099,200
+
+Feature MLP:
+
+  2048*8192 + 8192 + 8192*2048 + 2048
+  = 33,564,672
+
+Two LayerNorms:
+
+  2 norms * (2048 scale + 2048 bias)
+  = 8,192
+
+Total per block:
+
+  2,099,200 + 33,564,672 + 8,192
+  = 35,672,064
+
+
+10.4 Block stack
+----------------
+
+There are exactly 27 blocks:
+
+  X1  = Block1(X0)
+  X2  = Block2(X1)
+  ...
+  X27 = Block27(X26)
+
+All blocks have identical dimensions but independent trainable parameters.
+No weights are shared between block numbers.
+
+Total stack parameters:
+
+  35,672,064 * 27 = 963,145,728
+
+
+======================================================================
+11. FINAL NORMALIZATION AND LANGUAGE-MODEL HEAD
+======================================================================
+
+The block-stack output is normalized:
+
+  Z = FinalLayerNorm(X27)
+
+The final LayerNorm contains:
+
+  scale [2048]
+  bias  [2048]
+
+for 4,096 parameters.
+
+The vocabulary projection is:
+
+  Logits[b,n,v] = sum over d of Z[b,n,d] E_token[v,d]
+
+The output head's weight object is tied to the token-embedding matrix. It does
+not allocate a second [8192,2048] matrix. Gradients from input embedding use
+and output prediction update the same tensor.
+
+There is no vocabulary-output bias.
+
+
+======================================================================
+12. PARAMETER ACCOUNTING
+======================================================================
+
+Component                                      Parameters
+---------------------------------------------------------
+Token embedding / tied output matrix            16,777,216
+Absolute position embedding                      2,097,152
+Input projection                                         0
+Shared token-local encoder                      33,568,768
+Twenty-seven global blocks                     963,145,728
+Final LayerNorm                                      4,096
+Independent output head                                  0
+---------------------------------------------------------
+TOTAL                                        1,015,592,960
+
+Raw parameter storage:
+
+  FP32:
+    1,015,592,960 * 4 bytes
+    = 4,062,371,840 bytes
+    = 3,874.18 MiB
+
+  FP16 or BF16:
+    1,015,592,960 * 2 bytes
+    = 2,031,185,920 bytes
+    = 1,937.09 MiB
+
+The current complete training checkpoint is approximately 9.5 GB because it
+also stores AdamW optimizer moments, scaler state, resume state, metadata,
+and serialization overhead.
+
+
+======================================================================
+13. INITIALIZATION
+======================================================================
+
+13.1 General initialization
+---------------------------
+
+All training starts from random weights.
+
+  Linear weights:
+    Normal(mean=0, standard deviation=0.02)
+
+  Embedding weights:
+    Normal(mean=0, standard deviation=0.02)
+
+  Linear biases:
+    zero
+
+  LayerNorm scales:
+    one
+
+  LayerNorm biases:
+    zero
+
+
+13.2 Residual-depth scaling
+---------------------------
+
+Residual output projections receive depth-aware initialization.
+
+Let L=27. Define:
+
+  residual_gain = 1 / sqrt(2L)
+                = 1 / sqrt(54)
+                approximately 0.13608276
+
+For each global block:
+
+  TokenMix1 weight:
+    Xavier uniform with gain 1
+
+  TokenMix2 weight:
+    Xavier uniform with gain residual_gain
+
+  feature MLP second/output weight:
+    Normal(
+      mean=0,
+      standard deviation=0.02 / sqrt(54)
+    )
+
+The second feature weight's standard deviation is approximately:
+
+  0.00272166
+
+This reduces the initial contribution of each residual branch as network depth
+increases.
+
+
+13.3 Random seed
+----------------
+
+The pretraining seed is 1001. At process startup the implementation seeds:
+
+  - Python random;
+  - NumPy;
+  - PyTorch CPU;
+  - every visible CUDA device.
+
+Exact deterministic replay across different GPU architectures or PyTorch
+versions is not guaranteed, but checkpoint resume restores all captured RNG
+states on the same software/hardware stack.
+
+
+======================================================================
+14. LANGUAGE-MODEL OBJECTIVE
+======================================================================
+
+14.1 Pretraining samples
+------------------------
+
+Each dataset item contains exactly 1,024 consecutive token IDs:
+
+  input_ids = [t0, t1, ..., t1023]
+  labels    = a clone of input_ids
+
+
+14.2 Single causal shift
+------------------------
+
+The model computes:
+
+  prediction logits:
+    logits[:, 0:1023, :]
+
+  targets:
+    labels[:, 1:1024]
+
+Then:
+
+  loss = CrossEntropy(
+      flatten(logits[:, :-1, :]),
+      flatten(labels[:, 1:]),
+      ignore_index=-100
+  )
+
+Cross-entropy uses:
+
+  class weights:     none
+  reduction:         mean
+  label smoothing:   0.0
+
+The exact prediction relation is:
+
+  hidden position 0 predicts token t1
+  hidden position 1 predicts token t2
+  ...
+  hidden position 1022 predicts token t1023
+
+Position 1023 has no next token inside the same window and contributes no
+training target.
+
+Each full pretraining sequence therefore contains:
+
+  1,024 seen tokens
+  1,023 supervised next-token targets
+
+
+14.3 SFT masking
+----------------
+
+The same model-level shift is used for SFT. Labels are set to -100 for:
+
+  - <bos>;
+  - system and user text;
+  - role prefixes;
+  - padding;
+  - the first retained token after truncation.
+
+Only assistant-answer tokens and the terminal <eos> token contribute to SFT
+cross entropy.
+
+
+======================================================================
+15. PRETRAINING DATA
+======================================================================
+
+15.1 Exact token budget
+-----------------------
+
+The pretraining token stream contains exactly:
+
+  20,000,000,000 uint16 token IDs
+
+Binary size:
+
+  20,000,000,000 * 2
+  = 40,000,000,000 bytes
+
+The file is memory-mapped during training. It is not loaded entirely into
+system RAM.
+
+
+15.2 Exact source mixture
+-------------------------
+
+Source 1:
+  Name: smollm_fineweb_edu_dedup
+  Hugging Face dataset: HuggingFaceTB/smollm-corpus
+  Dataset configuration: fineweb-edu-dedup
+  Weight: 40 percent
+  Exact written tokens: 8,000,000,000
+
+Source 2:
+  Name: smollm_cosmopedia_v2
+  Hugging Face dataset: HuggingFaceTB/smollm-corpus
+  Dataset configuration: cosmopedia-v2
+  Weight: 25 percent
+  Exact written tokens: 5,000,000,000
+
+Source 3:
+  Name: wikimedia_wikipedia_en
+  Hugging Face dataset: wikimedia/wikipedia
+  Dataset configuration: 20231101.en
+  Weight: 20 percent
+  Exact written tokens: 4,000,000,000
+
+Source 4:
+  Name: fineweb_edu_sample10bt
+  Hugging Face dataset: HuggingFaceFW/fineweb-edu
+  Dataset configuration: sample-10BT
+  Weight: 15 percent
+  Exact written tokens: 3,000,000,000
+
+Total:
+  100 percent
+  20,000,000,000 tokens
+
+
+15.3 Why these sources are used
+-------------------------------
+
+FineWeb-Edu deduplicated:
+  Broad educational web text supplies general language, explanations, facts,
+  and varied document styles. Deduplication reduces repeated web content.
+
+Cosmopedia v2:
+  Synthetic educational and textbook-like content supplies structured
+  explanations and instructional language.
+
+English Wikipedia:
+  Encyclopedic articles supply broad entities, definitions, places, history,
+  science, and factual prose.
+
+FineWeb-Edu sample-10BT:
+  A second educational web source broadens coverage and style.
+
+
+15.4 Streaming preparation algorithm
+-------------------------------------
+
+For each source in the listed order:
+
+  1. Open its training split with Hugging Face datasets in streaming mode.
+  2. Read the configured "text" field.
+  3. If "text" is unavailable, try "content", "article", then "body".
+  4. Trim whitespace.
+  5. Reject text shorter than 80 characters.
+  6. Encode:
+
+       [<bos>] + tokenizer.encode(text).ids + [<eos>]
+
+  7. If the document crosses the source quota, truncate its final token list
+     exactly at the quota.
+  8. Write token IDs into a preallocated uint16 memory map.
+  9. Stop the source when its exact token quota is reached.
+ 10. Continue with the next source.
+
+The output is a concatenated token stream, not one separate file per source.
+
+
+15.5 Resume behavior during data preparation
+--------------------------------------------
+
+The builder writes progress metadata containing:
+
+  - number of tokens already written;
+  - total target;
+  - output path;
+  - source quotas and source progress.
+
+When restarted, it:
+
+  - opens the existing full-size memory map in read/write mode;
+  - skips complete sources;
+  - replays rows in the interrupted source until reaching the saved token
+    offset;
+  - resumes writing from that offset.
+
+Completion metadata is written atomically. The first three source row counts
+are null in the final current metadata because those sources were already
+complete when the final resumed metadata was constructed. Their exact token
+counts are known and validated; their original row counts were not retained.
+The fourth source records 227,370 rows used.
+
+
+15.6 Integrity validation
+-------------------------
+
+Before training, validate:
+
+  metadata tokens == 20,000,000,000
+  metadata target_tokens == 20,000,000,000
+  sum(source written_tokens) == 20,000,000,000
+  binary byte size == 40,000,000,000
+  dtype == uint16
+
+Training also performs its own metadata and byte-size checks before building
+the model.
+
+
+======================================================================
+16. PRETRAINING DATASET AND SAMPLER
+======================================================================
+
+16.1 Window construction
+------------------------
+
+The uint16 stream is split into non-overlapping windows:
+
+  start = index * 1024
+  end   = start + 1024
+
+The number of complete windows is:
+
+  floor(20,000,000,000 / 1024)
+  = 19,531,250
+
+No extra next token is read by the dataset because the model performs the
+causal shift inside each 1,024-token window.
+
+
+16.2 Validation split
+---------------------
+
+The final 10,000 windows are held out:
+
+  total complete windows:    19,531,250
+  validation windows:            10,000
+  training windows:          19,521,250
+
+The split is deterministic and contiguous in dataset-index space.
+
+
+16.3 Constant-memory random sampler
+-----------------------------------
+
+Allocating a Python random permutation for more than 19 million samples is
+unnecessarily expensive. The sampler instead uses an affine permutation.
+
+For dataset size S:
+
+  choose multiplier a such that gcd(a,S)=1
+  choose offset b in [0,S)
+
+Then:
+
+  sample_index(p) = (a*p + b) mod S
+
+for p from 0 through S-1.
+
+Because a is coprime with S, this mapping is bijective. Every sample appears
+exactly once per sampler epoch.
+
+The sampler stores:
+
+  seed
+  epoch
+  offset
+
+The epoch-specific random generator seed is:
+
+  base_seed + epoch
+
+This provides randomized traversal, deterministic reconstruction, constant
+sampler memory, and resumable position.
+
+The training DataLoader uses:
+
+  sampler:       ResumableRandomSampler
+  shuffle:       false because the sampler owns ordering
+  drop_last:     true
+  pin_memory:    true on CUDA
+  num_workers:   0
+
+The validation DataLoader uses:
+
+  shuffle:       false
+  drop_last:     false
+  pin_memory:    true on CUDA
+  num_workers:   0
+
+
+======================================================================
+17. PRETRAINING OPTIMIZATION
+======================================================================
+
+17.1 Exact configuration
+------------------------
+
+  device:                         cuda
+  precision:                      float16
+  microbatch size:                8 sequences
+  gradient accumulation:          8 microbatches
+  effective sequences per step:   64
+  context length:                 1024
+  tokens per optimizer step:      65,536
+  base learning rate:             0.00015
+  weight decay:                   0.1
+  maximum optimizer steps:        305,176
+  warmup steps:                   3,000
+  checkpoint interval:            500 steps
+  validation interval:            500 steps
+  validation batches:             8
+  gradient norm limit:            1.0
+  DataLoader workers:             0
+  random seed:                    1001
+
+
+17.2 Token accounting
+---------------------
+
+One microbatch:
+
+  8 * 1024 = 8,192 seen tokens
+
+One optimizer step:
+
+  8 microbatches * 8,192
+  = 65,536 seen tokens
+
+Complete schedule:
+
+  305,176 * 65,536
+  = 20,000,014,336 seen tokens
+
+Total sequence presentations:
+
+  305,176 * 64
+  = 19,531,264 sequences
+
+Total next-token targets, excluding any ignored labels:
+
+  19,531,264 * 1,023
+  = 19,980,483,072 supervised targets
+
+
+17.3 Optimizer
+--------------
+
+Use AdamW over all trainable parameters:
+
+  optimizer = AdamW(
+      model.parameters(),
+      lr=1.5e-4,
+      weight_decay=0.1
+  )
+
+The remaining AdamW values are PyTorch defaults:
+
+  beta1:          0.9
+  beta2:          0.999
+  epsilon:        1e-8
+  amsgrad:        false
+  maximize:       false
+  capturable:     false
+  differentiable: false
+
+The foreach and fused choices are left as `None`, allowing PyTorch to select
+its supported default implementation. For the closest replay, use the same
+PyTorch and CUDA versions listed in this paper.
+
+
+17.4 Learning-rate schedule
+---------------------------
+
+Let:
+
+  s = current optimizer step, starting at 1
+  S = 305176
+  W = 3000
+  eta = 0.00015
+
+Warmup:
+
+  if s <= W:
+      lr = eta * s / W
+
+Cosine phase:
+
+  progress = min((s-W)/(S-W), 1)
+
+  lr = eta * (
+      0.1 + 0.45 * (1 + cos(pi * progress))
+  )
+
+The schedule reaches eta at the end of warmup and approaches 0.1*eta at the
+last step.
+
+
+17.5 Mixed precision and accumulation
+-------------------------------------
+
+For each optimizer step:
+
+  1. Set all gradients to None.
+  2. Repeat eight times:
+       a. load one microbatch;
+       b. transfer input IDs and labels to CUDA;
+       c. enter CUDA FP16 autocast;
+       d. compute model loss;
+       e. divide loss by 8;
+       f. verify the divided loss is finite;
+       g. scale the loss with torch.amp.GradScaler;
+       h. backpropagate;
+       i. accumulate unscaled logging loss and token counters.
+  3. If any microbatch loss is non-finite:
+       a. discard the complete accumulated gradient;
+       b. reduce the scaler;
+       c. do not advance global step;
+       d. retry.
+  4. Advance global step.
+  5. Calculate and set the current learning rate.
+  6. Unscale gradients.
+  7. Clip global gradient norm to 1.0.
+  8. Execute optimizer step through the scaler.
+  9. Update the scaler.
+ 10. Synchronize CUDA for accurate elapsed-time accounting.
+ 11. Append a JSONL training record.
+ 12. Run validation and save when scheduled.
+
+
+17.6 Loss logging
+-----------------
+
+Every optimizer step appends one JSON object with:
+
+  type: "train"
+  step
+  loss
+  lr
+  total_seen_tokens
+  total_supervised_tokens
+  cumulative_gpu_time_seconds
+
+TensorBoard also records:
+
+  train/loss
+  train/lr
+  validation/loss
+  validation/perplexity
+
+
+======================================================================
+18. VALIDATION
+======================================================================
+
+Every 500 steps, evaluate eight batches from the held-out 10,000-window
+subset.
+
+Evaluation uses:
+
+  - model.eval();
+  - torch.inference_mode();
+  - the same FP16 autocast type;
+  - no backward pass;
+  - no parameter updates.
+
+Loss is weighted by the number of non-ignored target tokens.
+
+Perplexity is:
+
+  exp(mean_validation_loss)
+
+The implementation caps the exponent input at 20 to avoid overflow in
+reporting.
+
+Validation log records contain:
+
+  type: "validation"
+  step
+  loss
+  perplexity
+  supervised_tokens
+
+
+======================================================================
+19. CHECKPOINTING AND EXACT RESUME
+======================================================================
+
+19.1 One-checkpoint policy
+--------------------------
+
+The current pretraining checkpoint path is:
+
+  checkpoints/tlgm_1b_1024ctx_pretrain20b.pth
+
+Only one current pretraining checkpoint is retained. Every 500 steps, a
+temporary file is written and atomically renamed over the previous current
+checkpoint.
+
+Human-readable metadata is stored beside it as:
+
+  checkpoints/tlgm_1b_1024ctx_pretrain20b.json
+
+
+19.2 Checkpoint payload
+-----------------------
+
+The PyTorch checkpoint contains:
+
+  model:
+    model state dictionary converted to FP16 CPU tensors
+
+  optimizer:
+    complete AdamW state
+
+  scaler:
+    complete GradScaler state
+
+  sampler_state:
+    seed, epoch, and offset
+
+  rng_state:
+    Python, NumPy, PyTorch CPU, and all CUDA RNG states
+
+  global_step:
+    optimizer step
+
+  config:
+    complete parsed experiment configuration
+
+  metadata:
+    human-readable progress information
+
+
+19.3 Metadata fields
+--------------------
+
+The sidecar metadata records:
+
+  step
+  max_steps
+  last_loss
+  last_lr
+  tokens_per_step
+  total_tokens_trained
+  total_seen_tokens
+  total_supervised_tokens
+  cumulative_gpu_time_seconds
+  cumulative_gpu_time_hours
+  architecture
+
+
+19.4 Resume algorithm
+---------------------
+
+At process startup:
+
+  1. Construct the configured model.
+  2. Construct AdamW and GradScaler.
+  3. If the stage's own checkpoint exists:
+       a. load model state strictly;
+       b. load optimizer state;
+       c. load scaler state;
+       d. recover global step and counters;
+       e. recover sampler state;
+       f. recover all RNG states.
+  4. Construct the sampler and apply its saved state.
+  5. Construct the DataLoader.
+  6. Restore RNG states.
+  7. Continue until max_steps.
+
+For an SFT stage whose own checkpoint does not exist, load only model weights
+from its configured initialization checkpoint and begin that SFT stage at
+step zero with a new optimizer and schedule.
+
+
+19.5 Shutdown and restart
+-------------------------
+
+The Linux service sends SIGINT when stopping and permits up to ten minutes for
+shutdown. The production service uses Restart=on-failure with a 30-second
+delay. The service is enabled at boot.
+
+Because checkpoints are written every 500 steps, an unexpected stop can lose
+at most the work after the most recently completed checkpoint. The checkpoint
+itself remains valid because replacement is atomic.
+
+
+======================================================================
+20. SUPERVISED FINE-TUNING DATA
+======================================================================
+
+20.1 JSONL schema
+-----------------
+
+Each line is one JSON object:
+
+  {
+    "conversations": [
+      {"role": "user", "content": "What is 2+3?"},
+      {"role": "assistant", "content": "2+3 is 5."}
+    ]
+  }
+
+Allowed useful roles are system, user, and assistant. A row is retained only
+if it contains a non-empty assistant response.
+
+
+20.2 Chat-mix data
+------------------
+
+Actual file:
+
+  sft_chat_mix.jsonl
+
+Actual rows:
+
+  217,172
+
+Observed file size:
+
+  approximately 863 MiB on the Linux workstation
+
+Builder source requests:
+
+  - 200 repeated targeted examples:
+      10 hand-written examples repeated 20 times;
+  - up to 52,000 rows from tatsu-lab/alpaca;
+  - up to 15,000 rows from databricks/databricks-dolly-15k;
+  - up to 150,000 rows from
+    HuggingFaceH4/ultrachat_200k, train_sft split.
+
+The final file stores a common conversation schema but not a source field.
+Therefore the exact retained per-source row totals cannot be recovered from
+the final JSONL alone. The exact combined row count is 217,172.
+
+UltraChat conversations retain at most eight alternating user/assistant
+messages. Alpaca input fields and Dolly context fields are inserted into the
+user prompt when present.
+
+
+20.3 Repair data
+----------------
+
+Actual file:
+
+  sft_chat_repair.jsonl
+
+Actual rows:
+
+  750,500
+
+Observed file size:
+
+  approximately 85 MiB
+
+The dataset is generated from deterministic templates repeated 500 times and
+shuffled with seed 122. It covers:
+
+  - greetings;
+  - additions for operands 0 through 30;
+  - non-negative subtractions for operands 0 through 30;
+  - country capitals;
+  - definitions of cat, dog, chicken, cow, horse, bird, fish, ghost, robot,
+    and computer;
+  - a short robot story;
+  - "I don't know" responses for unknowable/private questions.
+
+This stage is intentionally narrow and corrective.
+
+
+20.4 Polish data
+----------------
+
+Actual generated rows:
+
+  7,000
+
+Construction:
+
+  14 hand-written prompt/answer pairs * 500 repeats
+
+Shuffle seed:
+
+  125
+
+Coverage:
+
+  - greetings;
+  - basic arithmetic;
+  - France and Japan capitals;
+  - cat, dog, chicken, and ghost descriptions;
+  - a three-sentence robot story;
+  - uncertainty behavior.
+
+
+20.5 SFT encoding and truncation
+-------------------------------
+
+Start with:
+
+  input_ids = [bos_id]
+  labels    = [-100]
+
+For a user message:
+
+  text = "User: " + content + "\n"
+  append encoded text to input_ids
+  append -100 for every corresponding label
+
+For an assistant message:
+
+  prefix = encode("Assistant: ")
+  answer = encode(content + "\n")
+
+  append prefix to input_ids
+  append -100 for prefix labels
+  append answer to input_ids
+  append answer token IDs to labels
+
+At the end:
+
+  append eos_id to input_ids
+  append eos_id to labels
+
+If length exceeds 1,024:
+
+  - keep the last 1,024 input IDs and labels;
+  - replace the first retained input ID with bos_id;
+  - set the first retained label to -100.
+
+This left truncation prioritizes preserving the most recent assistant answer.
+
+If length is shorter than 1,024:
+
+  - right-pad input IDs with pad_id;
+  - right-pad labels with -100.
+
+
+======================================================================
+21. SFT TRAINING STAGES
+======================================================================
+
+All SFT stages use:
+
+  context length:                 1024
+  microbatch size:                4
+  gradient accumulation:          16
+  effective sequences per step:   64
+  seen tokens per optimizer step: 65,536
+  dtype:                          float16
+  gradient norm limit:            1.0
+  weight decay:                   0.01
+  DataLoader workers:             0
+
+
+21.1 Stage 1: broad chat mix
+----------------------------
+
+Initialization:
+  checkpoints/tlgm_1b_1024ctx_pretrain20b.pth
+
+Output:
+  checkpoints/tlgm_1b_1024ctx_sft_chatmix.pth
+
+Rows:
+  217,172 total
+
+Validation holdout:
+  2,048 rows
+
+Steps:
+  12,000
+
+Learning rate:
+  3e-6
+
+Warmup:
+  500 steps
+
+Save/evaluate:
+  every 500 steps
+
+Random seed:
+  1002
+
+Seen-token budget:
+
+  12,000 * 65,536 = 786,432,000
+
+Sequence presentations:
+
+  12,000 * 64 = 768,000
+
+
+21.2 Stage 2: repair
+--------------------
+
+Initialization:
+  checkpoints/tlgm_1b_1024ctx_sft_chatmix.pth
+
+Output:
+  checkpoints/tlgm_1b_1024ctx_sft_repair.pth
+
+Rows:
+  750,500 total
+
+Validation holdout:
+  512 rows
+
+Steps:
+  3,000
+
+Learning rate:
+  1.5e-6
+
+Warmup:
+  200 steps
+
+Save/evaluate:
+  every 250 steps
+
+Random seed:
+  1003
+
+Seen-token budget:
+
+  3,000 * 65,536 = 196,608,000
+
+Sequence presentations:
+
+  3,000 * 64 = 192,000
+
+
+21.3 Stage 3: polish
+--------------------
+
+Initialization:
+  checkpoints/tlgm_1b_1024ctx_sft_repair.pth
+
+Output:
+  checkpoints/tlgm_1b_1024ctx_sft_final.pth
+
+Rows:
+  7,000 total
+
+Validation holdout:
+  700 rows
+
+Steps:
+  800
+
+Learning rate:
+  5e-7
+
+Warmup:
+  80 steps
+
+Save/evaluate:
+  every 100 steps
+
+Random seed:
+  1004
+
+Seen-token budget:
+
+  800 * 65,536 = 52,428,800
+
+Sequence presentations:
+
+  800 * 64 = 51,200
+
+
+21.4 Total configured SFT budget
+--------------------------------
+
+Total SFT steps:
+
+  12,000 + 3,000 + 800 = 15,800
+
+Total seen tokens:
+
+  786,432,000 + 196,608,000 + 52,428,800
+  = 1,035,468,800
+
+These are padded context tokens seen by the model. The number of supervised
+assistant tokens is lower because user text, prefixes, and padding are
+ignored in the loss.
+
+
+======================================================================
+22. AUTOREGRESSIVE GENERATION
+======================================================================
+
+22.1 Prompt construction
+------------------------
+
+Single-turn prompt:
+
+  User: <user text>
+  Assistant:
+
+The model input is:
+
+  [<bos>] + BPE(prompt)
+
+For history, append complete earlier turns:
+
+  User: earlier question
+  Assistant: earlier answer
+  User: current question
+  Assistant:
+
+
+22.2 Generation loop
+--------------------
+
+Repeat up to max_new_tokens:
+
+  1. Retain:
+
+       context = input_ids[:, -1024:]
+
+  2. Run the full model over context.
+  3. Select final-position logits:
+
+       next_logits = logits[:, -1, :]
+
+  4. If temperature <= 0:
+
+       next_id = argmax(next_logits)
+
+     Otherwise:
+
+       next_logits = next_logits / temperature
+       apply top-k
+       apply top-p
+       next_id = multinomial(softmax(next_logits))
+
+  5. Append next_id to input_ids.
+  6. Stop if next_id == eos_id.
+
+
+22.3 Top-k filtering
+--------------------
+
+Keep the k highest logits and set all lower logits to negative infinity. If
+k is zero, disable top-k filtering.
+
+
+22.4 Top-p filtering
+--------------------
+
+  1. Sort logits descending.
+  2. Softmax sorted logits.
+  3. Compute cumulative probabilities.
+  4. Remove tokens after cumulative probability first exceeds p.
+  5. Always retain at least the highest-probability token.
+  6. Scatter filtered values back to original vocabulary order.
+
+
+22.5 Stop cleanup
+-----------------
+
+After decoding newly generated IDs, stop displayed text at the first:
+
+  <eos>
+  <pad>
+  <bos>
+  User:
+
+Then trim whitespace.
+
+
+22.6 Recommended chat settings
+------------------------------
+
+Conservative factual/simple chat:
+
+  temperature:     0.3
+  top_p:           0.8
+  top_k:           20
+  max_new_tokens:  120 to 180
+
+More varied creative output:
+
+  temperature:     0.7
+  top_p:           0.9
+  top_k:           50
+
+
+======================================================================
+23. COMPUTATIONAL CHARACTERISTICS
+======================================================================
+
+23.1 Sequence mixing complexity
+-------------------------------
+
+One sequence operator applies an N by N matrix to D feature channels:
+
+  O(B * D * N^2)
+
+There are two per block and 27 blocks:
+
+  O(2 * L * B * D * N^2)
+
+
+23.2 Feature mixing complexity
+------------------------------
+
+Two dense projections per block cost:
+
+  O(2 * B * N * D * H)
+
+With D=2048 and H=8192, feature MLPs dominate parameter count and a large
+fraction of compute.
+
+
+23.3 Prefill
+------------
+
+The prompt is processed in parallel over positions. TLGM does not allocate
+multi-head attention score tensors and does not build a KV cache. It still
+performs dense position mixing in every block.
+
+
+23.4 Decoding
+-------------
+
+The present implementation has no incremental sequence state. Every generated
+token runs the model again over the retained context. This makes long
+autoregressive generation less efficient than an optimized Transformer with
+a KV cache.
+
+
+23.5 Context scaling
+--------------------
+
+Increasing context from C to 2C:
+
+  - doubles position-embedding parameters;
+  - quadruples each sequence-matrix parameter count;
+  - approximately quadruples sequence-mixing compute at full context;
+  - requires newly initialized matrix regions and further training;
+  - is not a config-only inference change.
+
+
+======================================================================
+24. NORMATIVE PYTORCH IMPLEMENTATION BLUEPRINT
+======================================================================
+
+The following compact implementation defines the essential architecture.
+It omits packaging and logging but is sufficient to recreate the forward
+model exactly.
+
+----------------------------------------------------------------------
+24.1 Configuration
+----------------------------------------------------------------------
+
+  from dataclasses import dataclass
+
+  @dataclass
+  class Config:
+      vocab_size: int = 8192
+      context_length: int = 1024
+      embed_dim: int = 2048
+      model_dim: int = 2048
+      num_global_blocks: int = 27
+      local_hidden_dim: int = 8192
+      feature_hidden_dim: int = 8192
+      dropout: float = 0.0
+      pad_token_id: int = 0
+      bos_token_id: int = 1
+      eos_token_id: int = 2
+      unk_token_id: int = 3
+      tie_embeddings: bool = True
+      initializer_range: float = 0.02
+      scale_residual_projections: bool = True
+
+
+----------------------------------------------------------------------
+24.2 Causal sequence operator
+----------------------------------------------------------------------
+
+  import torch
+  from torch import nn
+
+  class CausalSequenceLinear(nn.Module):
+      def __init__(self, sequence_length):
+          super().__init__()
+          self.sequence_length = sequence_length
+          self.weight = nn.Parameter(
+              torch.empty(sequence_length, sequence_length)
+          )
+          self.bias = nn.Parameter(torch.zeros(sequence_length))
+          self.register_buffer(
+              "causal_mask",
+              torch.tril(torch.ones(sequence_length, sequence_length)),
+              persistent=False,
+          )
+          nn.init.xavier_uniform_(self.weight)
+
+      def forward(self, x):
+          if x.ndim != 3:
+              raise ValueError("expected [B,N,D]")
+          n = x.shape[1]
+          if n > self.sequence_length:
+              raise ValueError("sequence exceeds configured context")
+          a = (
+              self.weight[:n, :n]
+              * self.causal_mask[:n, :n]
+          )
+          b = self.bias[:n]
+          y = torch.einsum("bjd,nj->bnd", x, a)
+          return y + b.view(1, n, 1)
+
+
+----------------------------------------------------------------------
+24.3 Embeddings and shared encoder
+----------------------------------------------------------------------
+
+  class TokenPositionEmbeddings(nn.Module):
+      def __init__(self, cfg):
+          super().__init__()
+          self.token_embedding = nn.Embedding(
+              cfg.vocab_size, cfg.embed_dim
+          )
+          self.position_embedding = nn.Embedding(
+              cfg.context_length, cfg.embed_dim
+          )
+          self.dropout = nn.Dropout(cfg.dropout)
+
+      def forward(self, input_ids):
+          b, n = input_ids.shape
+          pos = torch.arange(
+              n, device=input_ids.device
+          ).unsqueeze(0).expand(b, n)
+          return self.dropout(
+              self.token_embedding(input_ids)
+              + self.position_embedding(pos)
+          )
+
+  class SharedTokenEncoder(nn.Module):
+      def __init__(self, cfg):
+          super().__init__()
+          self.net = nn.Sequential(
+              nn.Linear(cfg.model_dim, cfg.local_hidden_dim),
+              nn.GELU(),
+              nn.Dropout(cfg.dropout),
+              nn.Linear(cfg.local_hidden_dim, cfg.model_dim),
+              nn.LayerNorm(cfg.model_dim),
+          )
+
+      def forward(self, x):
+          return self.net(x)
+
+
+----------------------------------------------------------------------
+24.4 Global block
+----------------------------------------------------------------------
+
+  class GlobalMixingBlock(nn.Module):
+      def __init__(self, cfg):
+          super().__init__()
+          self.token_norm = nn.LayerNorm(cfg.model_dim)
+          self.token_mix_1 = CausalSequenceLinear(
+              cfg.context_length
+          )
+          self.token_mix_2 = CausalSequenceLinear(
+              cfg.context_length
+          )
+          self.feature_norm = nn.LayerNorm(cfg.model_dim)
+          self.feature_mlp = nn.Sequential(
+              nn.Linear(cfg.model_dim, cfg.feature_hidden_dim),
+              nn.GELU(),
+              nn.Dropout(cfg.dropout),
+              nn.Linear(cfg.feature_hidden_dim, cfg.model_dim),
+              nn.Dropout(cfg.dropout),
+          )
+          self.act = nn.GELU()
+
+      def forward(self, x):
+          y = self.token_norm(x)
+          y = self.token_mix_1(y)
+          y = self.act(y)
+          y = self.token_mix_2(y)
+          x = x + y
+          y = self.feature_mlp(self.feature_norm(x))
+          return x + y
+
+
+----------------------------------------------------------------------
+24.5 Complete language model
+----------------------------------------------------------------------
+
+  import math
+  import torch.nn.functional as F
+
+  class TLGMForCausalLM(nn.Module):
+      def __init__(self, cfg):
+          super().__init__()
+          self.config = cfg
+          self.embeddings = TokenPositionEmbeddings(cfg)
+          self.input_projection = (
+              nn.Identity()
+              if cfg.embed_dim == cfg.model_dim
+              else nn.Linear(cfg.embed_dim, cfg.model_dim)
+          )
+          self.shared_encoder = SharedTokenEncoder(cfg)
+          self.blocks = nn.ModuleList([
+              GlobalMixingBlock(cfg)
+              for _ in range(cfg.num_global_blocks)
+          ])
+          self.final_norm = nn.LayerNorm(cfg.model_dim)
+          self.lm_head = nn.Linear(
+              cfg.model_dim, cfg.vocab_size, bias=False
+          )
+          if cfg.tie_embeddings and cfg.embed_dim == cfg.model_dim:
+              self.lm_head.weight = (
+                  self.embeddings.token_embedding.weight
+              )
+          self.apply(self._init_weights)
+          self._scale_residual_outputs()
+
+      def _init_weights(self, module):
+          if isinstance(module, (nn.Linear, nn.Embedding)):
+              nn.init.normal_(
+                  module.weight,
+                  mean=0.0,
+                  std=self.config.initializer_range,
+              )
+              if (
+                  isinstance(module, nn.Linear)
+                  and module.bias is not None
+              ):
+                  nn.init.zeros_(module.bias)
+          elif isinstance(module, nn.LayerNorm):
+              nn.init.ones_(module.weight)
+              nn.init.zeros_(module.bias)
+
+      def _scale_residual_outputs(self):
+          l = self.config.num_global_blocks
+          gain = 1.0 / math.sqrt(2*l)
+          for block in self.blocks:
+              nn.init.xavier_uniform_(
+                  block.token_mix_1.weight
+              )
+              nn.init.xavier_uniform_(
+                  block.token_mix_2.weight,
+                  gain=gain,
+              )
+              nn.init.normal_(
+                  block.feature_mlp[3].weight,
+                  mean=0.0,
+                  std=(
+                      self.config.initializer_range
+                      / math.sqrt(2*l)
+                  ),
+              )
+
+      def forward(self, input_ids, labels=None):
+          x = self.embeddings(input_ids)
+          x = self.input_projection(x)
+          x = self.shared_encoder(x)
+          for block in self.blocks:
+              x = block(x)
+          logits = self.lm_head(self.final_norm(x))
+          loss = None
+          if labels is not None:
+              loss = F.cross_entropy(
+                  logits[:, :-1].contiguous().view(
+                      -1, logits.size(-1)
+                  ),
+                  labels[:, 1:].contiguous().view(-1),
+                  ignore_index=-100,
+              )
+          return {"logits": logits, "loss": loss}
+
+
+----------------------------------------------------------------------
+24.6 Pretraining dataset
+----------------------------------------------------------------------
+
+  import numpy as np
+  import torch
+  from torch.utils.data import Dataset
+
+  class TokenBinDataset(Dataset):
+      def __init__(self, path, context_length=1024):
+          self.context_length = context_length
+          self.tokens = np.memmap(
+              path, dtype=np.uint16, mode="r"
+          )
+
+      def __len__(self):
+          return len(self.tokens) // self.context_length
+
+      def __getitem__(self, index):
+          start = index * self.context_length
+          end = start + self.context_length
+          chunk = np.asarray(
+              self.tokens[start:end],
+              dtype=np.int64,
+          )
+          input_ids = torch.from_numpy(chunk).long()
+          labels = input_ids.clone()
+          return input_ids, labels
+
+
+----------------------------------------------------------------------
+24.7 Training-loop essentials
+----------------------------------------------------------------------
+
+  model = TLGMForCausalLM(Config()).to("cuda")
+  optimizer = torch.optim.AdamW(
+      model.parameters(),
+      lr=1.5e-4,
+      weight_decay=0.1,
+  )
+  scaler = torch.amp.GradScaler("cuda", enabled=True)
+
+  for global_step in range(start_step, 305176):
+      optimizer.zero_grad(set_to_none=True)
+      valid = True
+
+      for microstep in range(8):
+          input_ids, labels = next_batch()
+          input_ids = input_ids.cuda(non_blocking=True)
+          labels = labels.cuda(non_blocking=True)
+
+          with torch.amp.autocast(
+              "cuda", dtype=torch.float16
+          ):
+              loss = model(input_ids, labels)["loss"] / 8
+
+          if not torch.isfinite(loss):
+              valid = False
+              break
+
+          scaler.scale(loss).backward()
+
+      if not valid:
+          optimizer.zero_grad(set_to_none=True)
+          scaler.update(
+              new_scale=max(scaler.get_scale()/2, 1)
+          )
+          continue
+
+      set_cosine_lr(optimizer, global_step+1)
+      scaler.unscale_(optimizer)
+      torch.nn.utils.clip_grad_norm_(
+          model.parameters(), 1.0
+      )
+      scaler.step(optimizer)
+      scaler.update()
+
+The production implementation must add the resume, validation, sampler, RNG,
+atomic-save, metadata, and logging behavior defined in earlier sections.
+
+
+======================================================================
+25. SOFTWARE ENVIRONMENT
+======================================================================
+
+25.1 Observed production environment
+------------------------------------
+
+Operating system:
+  Ubuntu 24.04.4 LTS
+
+Kernel:
+  Linux 7.0.0-28-generic
+
+Architecture:
+  x86-64
+
+Python:
+  3.12.3
+
+PyTorch:
+  2.11.0+cu128
+
+PyTorch bundled CUDA generation:
+  CUDA 12.8, indicated by +cu128
+
+NVIDIA driver:
+  595.84
+
+NVIDIA driver-reported CUDA compatibility:
+  CUDA 13.2
+
+Python packages:
+
+  torch==2.11.0+cu128
+  tokenizers==0.22.2
+  transformers==5.14.1
+  datasets==5.0.0
+  numpy==2.4.4
+  PyYAML==6.0.3
+  tqdm==4.69.1
+  tensorboard==2.21.0
+
+
+25.2 Minimum project requirements
+---------------------------------
+
+  torch>=2.5.0
+  tokenizers>=0.19.0
+  transformers>=4.43.0
+  datasets>=2.20.0
+  pyyaml>=6.0.1
+  tqdm>=4.66.0
+  numpy>=1.26.0
+  tensorboard>=2.17.0
+  pytest>=8.0.0
+
+For maximum reproducibility, use the observed pinned versions rather than
+only these lower bounds.
+
+
+25.3 Environment setup
+----------------------
+
+Example Ubuntu commands:
+
+  sudo apt update
+  sudo apt install -y python3 python3-venv python3-pip git
+
+  python3 -m venv "$HOME/venvs/tlgm"
+  source "$HOME/venvs/tlgm/bin/activate"
+  python -m pip install --upgrade pip
+
+Install the PyTorch CUDA wheel appropriate for the host driver, then:
+
+  python -m pip install \
+    tokenizers==0.22.2 \
+    transformers==5.14.1 \
+    datasets==5.0.0 \
+    numpy==2.4.4 \
+    PyYAML==6.0.3 \
+    tqdm==4.69.1 \
+    tensorboard==2.21.0 \
+    pytest
+
+Verify:
+
+  python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"
+
+
+======================================================================
+26. HARDWARE AND DEPLOYMENT
+======================================================================
+
+26.1 Production workstation
+---------------------------
+
+Motherboard:
+  ASUS ProArt X870E-CREATOR WIFI
+
+CPU:
+  AMD Ryzen 9 9950X 16-Core Processor
+
+CPU topology:
+  16 physical cores, 32 logical CPUs, one socket
+
+System RAM:
+  125 GiB observed by Linux
+
+Swap:
+  8 GiB
+
+GPU:
+  NVIDIA RTX PRO 6000 Blackwell Workstation Edition
+
+GPU VRAM:
+  97,887 MiB
+
+GPU power limit:
+  420 W
+
+Storage:
+  approximately 3.1 TiB root filesystem
+
+Free storage at the preceding status check:
+  approximately 2.9 TiB
+
+
+26.2 Observed training resource use
+-----------------------------------
+
+At full pretraining load:
+
+  GPU utilization:
+    100 percent
+
+  GPU memory:
+    approximately 34,542 MiB total used by the GPU
+
+  Training process GPU memory:
+    approximately 34,480 MiB
+
+  GPU temperature:
+    71 degrees Celsius
+
+  GPU power:
+    approximately 420 W
+
+The 420 W setting is a power cap. It does not mean CUDA utilization is capped
+at 70 percent. The GPU can correctly report 100 percent utilization while
+remaining at or below the configured power limit.
+
+
+26.3 Process supervision
+-------------------------
+
+The experiment runs as a systemd service:
+
+  service name:
+    tlgm1b-training.service
+
+  working directory:
+    /home/user/minimind/tlgm_1b_1024ctx
+
+  user/group:
+    user/user
+
+  restart policy:
+    on failure, after 30 seconds
+
+  stop signal:
+    SIGINT
+
+  stop timeout:
+    10 minutes
+
+  log:
+    remote_logs/tlgm1b_systemd.log
+
+The service is enabled at boot. It does not replace or disable UPS-controlled
+operating-system shutdown. On a power event, the system can shut down
+normally; after power and boot return, the service resumes from its most
+recent checkpoint.
+
+
+======================================================================
+27. ONE-SHOT TRAINING PIPELINE
+======================================================================
+
+The complete runner performs:
+
+  1. activate the virtual environment if present;
+  2. create data, checkpoint, output, and log directories;
+  3. prepare or resume the 20B token stream if completion metadata is absent;
+  4. validate the 20B token stream;
+  5. pretrain from random initialization or resume its checkpoint;
+  6. run broad chat-mix SFT;
+  7. run repair SFT;
+  8. generate polish data if absent;
+  9. run polish SFT;
+ 10. run fixed prompt tests.
+
+Normative shell flow:
+
+  set -euo pipefail
+  source "$HOME/venvs/tlgm/bin/activate"
+
+  python scripts/prepare_pretrain20b_tokens.py \
+    --target_tokens 20000000000 \
+    --output_bin data/processed/pretrain20b_tokens.bin \
+    --meta data/processed/pretrain20b_tokens_meta.json
+
+  python scripts/validate_pretrain_data.py \
+    --bin data/processed/pretrain20b_tokens.bin \
+    --meta data/processed/pretrain20b_tokens_meta.json \
+    --expected_tokens 20000000000
+
+  python scripts/train.py \
+    --config configs/pretrain_tlgm_1b_20b.yaml
+
+  python scripts/train.py \
+    --config configs/sft_tlgm_1b_chatmix.yaml
+
+  python scripts/train.py \
+    --config configs/sft_tlgm_1b_repair.yaml
+
+  python scripts/prepare_polish_sft.py \
+    --output data/processed/sft_polish.jsonl \
+    --repeats 500
+
+  python scripts/train.py \
+    --config configs/sft_tlgm_1b_polish.yaml
+
+  python scripts/test_prompts.py \
+    --config configs/sft_tlgm_1b_polish.yaml \
+    --checkpoint checkpoints/tlgm_1b_1024ctx_sft_final.pth \
+    --temperature 0.3 \
+    --top_p 0.8 \
+    --top_k 20 \
+    --max_new_tokens 180
+
+
+======================================================================
+28. LIVE TRAINING STATUS SNAPSHOT
+======================================================================
+
+Snapshot timestamp:
+  2026-07-28 07:48:04 UTC+08:00
+
+Service state:
+  active/running
+
+Service start:
+  2026-07-27 20:15:29 UTC+08:00
+
+Main service PID:
+  11824
+
+Python GPU process PID:
+  11872
+
+Service restart count:
+  0
+
+Latest observed live step:
+  15,166 / 305,176
+
+Progress:
+  4.970 percent
+
+Seen tokens:
+  993,918,976
+
+Latest observed training loss:
+  2.801668
+
+Recent training-loss range:
+  approximately 2.75 to 3.02
+
+Latest saved checkpoint step:
+  15,000
+
+Checkpoint training loss:
+  2.880558
+
+Checkpoint learning rate:
+  0.00014947537
+
+Latest held-out validation:
+
+  step:
+    15,000
+
+  validation loss:
+    3.2732428014
+
+  validation perplexity:
+    26.39680028
+
+  evaluated target tokens:
+    65,472
+
+Cumulative measured training time at live step:
+  41,545.80 seconds
+  11.5405 hours
+
+Measured speed:
+
+  seconds per optimizer step:
+    2.7394
+
+  optimizer steps per second:
+    0.3650
+
+  seen tokens per second:
+    23,923
+
+
+======================================================================
+29. COMPLETION ESTIMATE
+======================================================================
+
+At the snapshot:
+
+  remaining steps:
+    305,176 - 15,166 = 290,010
+
+  measured seconds per step:
+    2.7394
+
+  estimated remaining pretraining time:
+    approximately 220.68 hours
+    approximately 9.20 days
+
+  estimated pretraining completion:
+    2026-08-06 12:29 UTC+08:00
+
+This estimate assumes:
+
+  - current throughput remains stable;
+  - no long workstation outage;
+  - normal checkpoint and validation overhead;
+  - no thermal or hardware throttling;
+  - no software failure requiring intervention.
+
+Configured SFT contains 15,800 additional optimizer steps. At the current
+pretraining step rate, pure compute would be about 12 hours. Different data
+loading, validation, and checkpoint-write frequency can change this.
+A practical SFT estimate is approximately 12 to 18 hours after pretraining.
+
+Practical estimated complete pipeline time:
+
+  approximately 2026-08-07, subject to the assumptions above.
+
+
+======================================================================
+30. TESTING AND VERIFICATION
+======================================================================
+
+30.1 Architecture tests
+-----------------------
+
+Required automated checks:
+
+  - estimated parameters equal actual unique parameters;
+  - exact total is 1,015,592,960;
+  - output head and token embedding are the same weight object;
+  - random initialization produces finite loss and gradients;
+  - changing future tokens does not change earlier logits;
+  - pretraining labels are not pre-shifted;
+  - long SFT examples retain supervised assistant targets;
+  - resumable sampler continues at the exact next sample;
+  - checkpoint resume restores sampler and token counters.
+
+The current test suite contains eight tests and passes all eight.
+
+
+30.2 Causality test
+-------------------
+
+Construct two sequences A and B:
+
+  - positions 0 through k are identical;
+  - positions k+1 onward differ.
+
+Run both through the model in evaluation mode.
+
+Assert:
+
+  max_abs(
+    logits_A[:, 0:k+1, :]
+    - logits_B[:, 0:k+1, :]
+  ) == 0 within numerical tolerance
+
+This directly verifies no future-token leakage.
+
+
+30.3 Full-model initialization test
+-----------------------------------
+
+Construct the complete 1.0156B model and check:
+
+  - exact parameter count;
+  - embedding standard deviation approximately 0.02;
+  - finite forward loss;
+  - successful CUDA allocation;
+  - successful backward operation in a practical short-sequence test.
+
+
+30.4 Final chat prompts
+-----------------------
+
+After all SFT stages, test:
+
+  hello
+  what is 1+5
+  what is the capital of france?
+  explain what a cat is
+  what is a dog
+  what is a chicken
+  what is a ghost
+  write a 3 sentence story about a robot
+  Who won the private moon chess championship in 1842?
+
+Evaluate not only exact wording but:
+
+  - answer correctness;
+  - cross-question answer leakage;
+  - repetition;
+  - EOS behavior;
+  - uncertainty behavior;
+  - response length;
+  - prompt-format consistency.
+
+
+======================================================================
+31. RUNNING INTERACTIVE CHAT
+======================================================================
+
+After the final checkpoint exists:
+
+  cd /home/user/minimind/tlgm_1b_1024ctx
+  source /home/user/venvs/tlgm/bin/activate
+  python chat_cli.py
+
+Explicit form:
+
+  python chat_cli.py \
+    --config configs/sft_tlgm_1b_polish.yaml \
+    --checkpoint checkpoints/tlgm_1b_1024ctx_sft_final.pth \
+    --device cuda \
+    --history_turns 2 \
+    --temperature 0.3 \
+    --top_p 0.8 \
+    --top_k 20 \
+    --max_new_tokens 160
+
+Commands inside the CLI:
+
+  exit or quit:
+    close chat
+
+  /reset:
+    clear retained conversation history
+
+The final SFT checkpoint must exist before this command can run.
+
+
+======================================================================
+32. MONITORING AND OPERATIONS
+======================================================================
+
+Check service:
+
+  systemctl status tlgm1b-training.service
+
+Follow service output:
+
+  tail -f \
+    /home/user/minimind/tlgm_1b_1024ctx/remote_logs/tlgm1b_systemd.log
+
+Read checkpoint metadata:
+
+  cat \
+    /home/user/minimind/tlgm_1b_1024ctx/checkpoints/tlgm_1b_1024ctx_pretrain20b.json
+
+Read recent machine-readable records:
+
+  tail -20 \
+    /home/user/minimind/tlgm_1b_1024ctx/outputs/tlgm_1b_1024ctx_pretrain20b_loss.jsonl
+
+Read recent validation:
+
+  grep validation \
+    /home/user/minimind/tlgm_1b_1024ctx/outputs/tlgm_1b_1024ctx_pretrain20b_loss.jsonl \
+    | tail
+
+Check GPU:
+
+  nvidia-smi
+
+Stop gracefully:
+
+  sudo systemctl stop tlgm1b-training.service
+
+Start or resume:
+
+  sudo systemctl start tlgm1b-training.service
+
+Enable at boot:
+
+  sudo systemctl enable tlgm1b-training.service
+
+Do not manually delete the current checkpoint when the intention is to
+resume.
+
+
+======================================================================
+33. DIRECTORY LAYOUT FOR A CLEAN REBUILD
+======================================================================
+
+Create:
+
+  tlgm_1b_1024ctx/
+    chat_cli.py
+    requirements.txt
+    run_tlgm_1b_full_pipeline.sh
+    configs/
+      pretrain_tlgm_1b_20b.yaml
+      sft_tlgm_1b_chatmix.yaml
+      sft_tlgm_1b_repair.yaml
+      sft_tlgm_1b_polish.yaml
+    tlgm/
+      __init__.py
+      config.py
+      tokenizer.py
+      embeddings.py
+      local_encoder.py
+      causal_linear.py
+      global_mixer.py
+      model.py
+      dataset.py
+      generation.py
+      trainer.py
+      utils.py
+    scripts/
+      train_tokenizer.py
+      prepare_pretrain20b_tokens.py
+      validate_pretrain_data.py
+      prepare_polish_sft.py
+      train.py
+      test_prompts.py
+    tests/
+      test_tlgm.py
+    tokenizer/
+      vocab.json
+      merges.txt
+    data/
+      processed/
+    checkpoints/
+    outputs/
+    remote_logs/
+
+
+======================================================================
+34. EXACT YAML CONFIGURATIONS
+======================================================================
+
+34.1 Pretraining
+----------------
+
+  model:
+    vocab_size: 8192
+    context_length: 1024
+    embed_dim: 2048
+    model_dim: 2048
+    num_global_blocks: 27
+    local_hidden_dim: 8192
+    feature_hidden_dim: 8192
+    dropout: 0.0
+    pad_token_id: 0
+    bos_token_id: 1
+    eos_token_id: 2
+    unk_token_id: 3
+    tie_embeddings: true
+    initializer_range: 0.02
+    scale_residual_projections: true
+
+  data:
+    train_bin: data/processed/pretrain20b_tokens.bin
+    meta: data/processed/pretrain20b_tokens_meta.json
+
+  checkpoint_path:
+    checkpoints/tlgm_1b_1024ctx_pretrain20b.pth
+
+  log_path:
+    outputs/tlgm_1b_1024ctx_pretrain20b_loss.jsonl
+
+  tensorboard_dir:
+    outputs/tensorboard_pretrain20b
+
+  validation:
+    enabled: true
+    holdout_samples: 10000
+    eval_steps: 500
+    eval_batches: 8
+
+  training:
+    device: cuda
+    dtype: float16
+    batch_size: 8
+    gradient_accumulation_steps: 8
+    learning_rate: 0.00015
+    weight_decay: 0.1
+    max_steps: 305176
+    warmup_steps: 3000
+    save_steps: 500
+    grad_clip: 1.0
+    num_workers: 0
+    seed: 1001
+
+
+34.2 Chat-mix SFT differences
+------------------------------
+
+  data:
+    sft_jsonl:
+      ../minimind_120m_tiny_chatgpt/data/processed/sft_chat_mix.jsonl
+    tokenizer_dir: tokenizer
+
+  init_checkpoint:
+    checkpoints/tlgm_1b_1024ctx_pretrain20b.pth
+
+  checkpoint_path:
+    checkpoints/tlgm_1b_1024ctx_sft_chatmix.pth
+
+  validation:
+    holdout_samples: 2048
+    eval_steps: 500
+    eval_batches: 16
+
+  training:
+    dtype: float16
+    batch_size: 4
+    gradient_accumulation_steps: 16
+    learning_rate: 0.000003
+    weight_decay: 0.01
+    max_steps: 12000
+    warmup_steps: 500
+    save_steps: 500
+    grad_clip: 1.0
+    num_workers: 0
+    seed: 1002
+
+
+34.3 Repair SFT differences
+----------------------------
+
+  data:
+    sft_jsonl:
+      ../minimind_120m_tiny_chatgpt/data/processed/sft_chat_repair.jsonl
+    tokenizer_dir: tokenizer
+
+  init_checkpoint:
+    checkpoints/tlgm_1b_1024ctx_sft_chatmix.pth
+
+  checkpoint_path:
+    checkpoints/tlgm_1b_1024ctx_sft_repair.pth
+
+  validation:
+    holdout_samples: 512
+    eval_steps: 250
+    eval_batches: 16
+
+  training:
+    dtype: float16
+    batch_size: 4
+    gradient_accumulation_steps: 16
+    learning_rate: 0.0000015
+    weight_decay: 0.01
+    max_steps: 3000
+    warmup_steps: 200
+    save_steps: 250
+    grad_clip: 1.0
+    num_workers: 0
+    seed: 1003
+
+
+34.4 Polish SFT differences
+----------------------------
+
+  data:
+    sft_jsonl: data/processed/sft_polish.jsonl
+    tokenizer_dir: tokenizer
+
+  init_checkpoint:
+    checkpoints/tlgm_1b_1024ctx_sft_repair.pth
+
+  checkpoint_path:
+    checkpoints/tlgm_1b_1024ctx_sft_final.pth
+
+  validation:
+    holdout_samples: 700
+    eval_steps: 100
+    eval_batches: 16
+
+  training:
+    dtype: float16
+    batch_size: 4
+    gradient_accumulation_steps: 16
+    learning_rate: 0.0000005
+    weight_decay: 0.01
+    max_steps: 800
+    warmup_steps: 80
+    save_steps: 100
+    grad_clip: 1.0
+    num_workers: 0
+    seed: 1004
+
+All SFT files must repeat the complete model section from the pretraining
+config so strict checkpoint loading constructs the identical architecture.
+
+
+======================================================================
+35. REPRODUCTION CHECKLIST
+======================================================================
+
+Architecture:
+
+  [ ] Vocabulary is 8192.
+  [ ] Context is 1024.
+  [ ] Embedding/model width is 2048.
+  [ ] Hidden MLP width is 8192.
+  [ ] There are exactly 27 global blocks.
+  [ ] Every block has two independent causal sequence operators.
+  [ ] Every sequence matrix is 1024 by 1024 and lower-triangular at runtime.
+  [ ] Every block has two separate pre-normalization LayerNorms.
+  [ ] Every block has a 2048 -> 8192 -> 2048 GELU feature MLP.
+  [ ] Token and output weights are tied.
+  [ ] Final LayerNorm is present.
+  [ ] No output bias is present.
+  [ ] Total unique parameters are 1,015,592,960.
+
+Tokenizer:
+
+  [ ] Byte-level BPE is used.
+  [ ] Vocabulary size is 8192.
+  [ ] Special IDs are 0,1,2,3 in the specified order.
+  [ ] Pretraining and inference use the same vocab and merges.
+
+Initialization:
+
+  [ ] General weight standard deviation is 0.02.
+  [ ] Biases are zero.
+  [ ] LayerNorm scales are one.
+  [ ] Residual output projections use 1/sqrt(54) scaling.
+  [ ] No pretrained model weights are loaded at pretraining step zero.
+
+Data:
+
+  [ ] Binary dtype is uint16.
+  [ ] Binary contains exactly 20,000,000,000 tokens.
+  [ ] Source quotas are 8B, 5B, 4B, and 3B.
+  [ ] Binary size is exactly 40,000,000,000 bytes.
+  [ ] Dataset returns identical input IDs and labels.
+  [ ] Model performs exactly one causal shift.
+  [ ] Last 10,000 windows are held out.
+
+Training:
+
+  [ ] FP16 autocast and GradScaler are active.
+  [ ] Microbatch is 8 for pretraining.
+  [ ] Accumulation is 8 for pretraining.
+  [ ] Effective tokens per step are 65,536.
+  [ ] AdamW learning rate is 1.5e-4.
+  [ ] Warmup is 3,000 steps.
+  [ ] Maximum steps are 305,176.
+  [ ] Gradient norm is clipped to 1.0.
+  [ ] Invalid accumulation is discarded as one unit.
+  [ ] Validation runs every 500 steps.
+  [ ] Checkpoint atomically replaces one current file every 500 steps.
+  [ ] Model, optimizer, scaler, sampler, and RNG states resume.
+
+SFT:
+
+  [ ] User and prefix labels are -100.
+  [ ] Assistant answer and EOS are supervised.
+  [ ] Left truncation preserves recent answers.
+  [ ] Chat-mix initializes from pretraining.
+  [ ] Repair initializes from chat-mix.
+  [ ] Polish initializes from repair.
+  [ ] Final chat checkpoint is not confused with pretraining checkpoint.
+
+Inference:
+
+  [ ] Prompt uses exact User/Assistant role strings.
+  [ ] Context is capped to the newest 1024 IDs.
+  [ ] EOS ID 2 stops generation.
+  [ ] Temperature, top-k, and top-p are applied in the specified order.
+  [ ] Only newly generated IDs are decoded as the answer.
+
+
+======================================================================
+36. REPRODUCIBILITY LEVELS AND ARTIFACT IDENTITY
+======================================================================
+
+Three different meanings of "reproduce the model" must be distinguished.
+
+Architecture-equivalent reproduction:
+
+  Implement the equations, dimensions, initialization, tokenizer method,
+  data mixture, and training procedure in this paper. This produces the same
+  model design and experiment, but random and data-order differences can
+  produce different learned weights.
+
+Checkpoint-compatible reproduction:
+
+  In addition to the architecture, use tokenizer files with the SHA-256
+  hashes listed in this paper and exactly matching parameter names/shapes.
+  This allows strict loading of compatible checkpoints.
+
+Bit-for-bit training reproduction:
+
+  This additionally requires:
+
+  - exact 40,000,000,000-byte token binary;
+  - exact SFT JSONL files;
+  - exact package and CUDA versions;
+  - exact initial RNG state;
+  - exact sampler state;
+  - exact GPU kernels and deterministic behavior;
+  - exact checkpoint from which execution continues.
+
+The Hugging Face streaming calls in the data builder do not pin explicit
+dataset commit revisions. If an upstream dataset changes, rebuilding later
+can produce different text even with the same dataset identifier. A permanent
+archival release should therefore store the completed token binary or its
+cryptographic hash and pin every dataset revision.
+
+
+======================================================================
+37. INTERPRETING RESULTS
+======================================================================
+
+Training loss measures next-token cross entropy on sampled training windows.
+Validation loss measures the same objective on held-out windows. Lower values
+are generally better, but they do not directly measure chat usefulness,
+truthfulness, reasoning, or safety.
+
+Perplexity is an exponential transformation of cross entropy. A validation
+perplexity of 26.40 means that under this tokenizer and held-out sample, the
+model's average uncertainty corresponds mathematically to about 26.4 equally
+likely alternatives. It must not be compared blindly across models using
+different tokenizers or datasets.
+
+The training loss can be lower than validation loss because:
+
+  - weights are optimized on training windows;
+  - held-out text can differ in difficulty;
+  - each reported train step is one sampled accumulated batch;
+  - validation averages a separate fixed set of batches.
+
+Final model quality should be evaluated after all SFT stages with both:
+
+  - deterministic or low-temperature fixed prompts;
+  - broader held-out tasks not duplicated in targeted SFT.
+
+
+======================================================================
+38. CONCLUSION
+======================================================================
+
+TLGM-1B-1024 is a fully causal, attention-free, approximately one-billion
+parameter language model. Its defining operation is a learned
+lower-triangular sequence matrix shared across feature channels. Twenty-seven
+blocks combine this global position mixing with large token-local feature
+MLPs and residual pre-normalized computation.
+
+The model is trained from random initialization with a newly trained
+byte-level BPE tokenizer, an exact 20-billion-token corpus, a one-token causal
+objective, AdamW, FP16 accumulation, held-out validation, and complete
+checkpoint resume. Three assistant-only SFT stages convert the pretrained
+continuation model into a small chat model.
+
+The specification, equations, parameter formulas, data quotas, optimizer,
+checkpoint contract, code blueprint, hardware setup, shell commands, and
+verification checklist in this paper define the complete experiment. An
+engineer following them can implement and run an equivalent TLGM-1B-1024
+training pipeline without using the original repository.
+
+
+END OF PAPER

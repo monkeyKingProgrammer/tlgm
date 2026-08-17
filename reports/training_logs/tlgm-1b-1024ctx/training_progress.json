@@ -1,0 +1,15 @@
+{
+  "generated_at": "2026-08-13T16:53:02.054608+08:00",
+  "step": 40529,
+  "max_steps": 120000,
+  "progress_percent": 33.774166666666666,
+  "latest_loss": 1.1248765178024769,
+  "rolling_500_loss": 1.0902345376498996,
+  "pre_fix_500_loss": 1.212223422266543,
+  "rolling_loss_improvement_percent": 10.06323441503512,
+  "validation_step": 40000,
+  "validation_loss": 1.0916422558878993,
+  "validation_perplexity": 2.979162604682587,
+  "estimated_remaining_hours": 58.822839772051005,
+  "output": "/home/user/minimind/tlgm_1b_1024ctx/outputs/training_progress.png"
+}

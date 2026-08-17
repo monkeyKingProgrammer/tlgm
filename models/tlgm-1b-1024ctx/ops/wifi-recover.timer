@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically verify the RTX6000 workstation Wi-Fi connection
+
+[Timer]
+OnBootSec=90s
+OnUnitInactiveSec=2min
+AccuracySec=15s
+Persistent=true
+Unit=wifi-recover.service
+
+[Install]
+WantedBy=timers.target

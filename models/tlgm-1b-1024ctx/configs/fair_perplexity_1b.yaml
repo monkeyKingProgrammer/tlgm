@@ -1,0 +1,46 @@
+protocol:
+  context_length: 1024
+  batch_size: 4
+  dtype: bfloat16
+  device: cuda
+  output_dir: outputs/fair_perplexity_1b
+  cache_dir: data/eval_cache
+
+datasets:
+  - name: WikiText-2-raw
+    repository: Salesforce/wikitext
+    config: wikitext-2-raw-v1
+    split: test
+  - name: WikiText-103-raw
+    repository: Salesforce/wikitext
+    config: wikitext-103-raw-v1
+    split: test
+
+models:
+  - name: TLGM-1B-original-SFT
+    type: tlgm
+    checkpoint: checkpoints/tlgm_1b_1024ctx_sft_final.pth
+    config: configs/sft_tlgm_1b_reasoning_3day.yaml
+    tokenizer: tokenizer
+  - name: TLGM-1B-reasoning-best
+    type: tlgm
+    checkpoint: checkpoints/tlgm_1b_1024ctx_sft_reasoning_3day_best.pth
+    config: configs/sft_tlgm_1b_reasoning_3day.yaml
+    tokenizer: tokenizer
+  - name: TLGM-1B-reasoning-final
+    type: tlgm
+    checkpoint: checkpoints/tlgm_1b_1024ctx_sft_reasoning_3day.pth
+    config: configs/sft_tlgm_1b_reasoning_3day.yaml
+    tokenizer: tokenizer
+  - name: TinyLlama-1.1B-3T
+    type: huggingface
+    repository: TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T
+  - name: OLMo-1B
+    type: huggingface
+    repository: allenai/OLMo-1B-hf
+  - name: SmolLM2-1.7B
+    type: huggingface
+    repository: HuggingFaceTB/SmolLM2-1.7B
+  - name: Qwen2.5-1.5B
+    type: huggingface
+    repository: Qwen/Qwen2.5-1.5B

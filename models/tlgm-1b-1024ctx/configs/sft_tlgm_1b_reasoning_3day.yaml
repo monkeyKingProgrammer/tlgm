@@ -1,0 +1,51 @@
+model:
+  vocab_size: 8192
+  context_length: 1024
+  embed_dim: 2048
+  model_dim: 2048
+  num_global_blocks: 27
+  local_hidden_dim: 8192
+  feature_hidden_dim: 8192
+  dropout: 0.0
+  pad_token_id: 0
+  bos_token_id: 1
+  eos_token_id: 2
+  unk_token_id: 3
+  tie_embeddings: true
+  initializer_range: 0.02
+  scale_residual_projections: true
+
+data:
+  sft_jsonl: data/processed/sft_reasoning_large_v2.jsonl
+  validation_jsonl: data/processed/sft_reasoning_validation_v2.jsonl
+  manifest: data/processed/sft_reasoning_large_v2.manifest.json
+  tokenizer_dir: tokenizer
+
+init_checkpoint: checkpoints/tlgm_1b_1024ctx_sft_final.pth
+checkpoint_path: checkpoints/tlgm_1b_1024ctx_sft_reasoning_3day.pth
+best_checkpoint_path: checkpoints/tlgm_1b_1024ctx_sft_reasoning_3day_best.pth
+log_path: outputs/tlgm_1b_1024ctx_sft_reasoning_3day_loss.jsonl
+tensorboard_dir: outputs/tensorboard_sft_reasoning_3day
+
+validation:
+  enabled: true
+  eval_steps: 1000
+  eval_batches: 0
+  batch_size: 16
+
+training:
+  device: cuda
+  dtype: bfloat16
+  batch_size: 4
+  gradient_accumulation_steps: 16
+  learning_rate: 0.0000005
+  weight_decay: 0.01
+  max_steps: 120000
+  warmup_steps: 2000
+  save_steps: 500
+  grad_clip: 1.0
+  num_workers: 0
+  seed: 2029
+  checkpoint_model_dtype: float32
+  best_model_dtype: bfloat16
+  max_consecutive_invalid_steps: 10

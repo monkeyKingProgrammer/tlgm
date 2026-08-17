@@ -1,0 +1,20 @@
+[Unit]
+Description=TLGM 1B reasoning SFT
+After=network-online.target
+Wants=network-online.target
+OnSuccess=tlgm1b-fair-ppl.service
+
+[Service]
+Type=simple
+User=user
+WorkingDirectory=/home/user/minimind/tlgm_1b_1024ctx
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/home/user/venvs/tlgm/bin/python scripts/verify_sft_artifacts.py
+ExecStart=/home/user/venvs/tlgm/bin/python scripts/train.py --config configs/sft_tlgm_1b_reasoning_3day.yaml
+KillSignal=SIGTERM
+TimeoutStopSec=900
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
