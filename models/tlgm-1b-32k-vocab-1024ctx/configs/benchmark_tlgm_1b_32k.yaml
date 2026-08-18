@@ -1,0 +1,20 @@
+model_config: configs/sft_tlgm_1b_32k_reasoning.yaml
+checkpoint: checkpoints/tlgm_1b_32k_sft_reasoning_best.pth
+tokenizer_dir: tokenizer
+benchmark_dir: data/benchmarks_full
+output_dir: outputs/benchmarks/tlgm_1b_32k
+
+device: cuda
+dtype: bfloat16
+eval_batch_size: 8
+max_length: 1024
+seed: 32005
+
+tasks:
+  - arc_easy
+  - hellaswag
+  - piqa
+  - boolq
+  - winogrande
+  - openbookqa
+  - truthfulqa_mc1

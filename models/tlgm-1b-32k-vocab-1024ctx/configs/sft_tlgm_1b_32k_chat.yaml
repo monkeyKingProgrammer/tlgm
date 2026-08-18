@@ -1,0 +1,47 @@
+model: &model
+  vocab_size: 32000
+  context_length: 1024
+  embed_dim: 2048
+  model_dim: 2048
+  num_global_blocks: 27
+  local_hidden_dim: 8192
+  feature_hidden_dim: 8192
+  dropout: 0.0
+  pad_token_id: 0
+  bos_token_id: 1
+  eos_token_id: 2
+  unk_token_id: 3
+  tie_embeddings: true
+  initializer_range: 0.02
+  scale_residual_projections: true
+
+data:
+  sft_jsonl: data/processed/sft_chat_32k.jsonl
+  manifest: data/processed/sft_chat_32k.manifest.json
+  tokenizer_dir: tokenizer
+
+init_checkpoint: checkpoints/tlgm_1b_32k_pretrain50b.pth
+checkpoint_path: checkpoints/tlgm_1b_32k_sft_chat.pth
+log_path: outputs/tlgm_1b_32k_sft_chat_loss.jsonl
+tensorboard_dir: outputs/tensorboard_sft_chat
+
+validation:
+  enabled: true
+  holdout_samples: 2048
+  eval_steps: 500
+  eval_batches: 16
+
+training:
+  device: cuda
+  dtype: bfloat16
+  batch_size: 4
+  gradient_accumulation_steps: 16
+  learning_rate: 0.000003
+  weight_decay: 0.01
+  max_steps: 12000
+  warmup_steps: 500
+  save_steps: 500
+  grad_clip: 1.0
+  num_workers: 0
+  seed: 32002
+  checkpoint_model_dtype: bfloat16

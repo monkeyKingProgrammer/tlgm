@@ -1,0 +1,48 @@
+model:
+  vocab_size: 32000
+  context_length: 1024
+  embed_dim: 2048
+  model_dim: 2048
+  num_global_blocks: 27
+  local_hidden_dim: 8192
+  feature_hidden_dim: 8192
+  dropout: 0.0
+  pad_token_id: 0
+  bos_token_id: 1
+  eos_token_id: 2
+  unk_token_id: 3
+  tie_embeddings: true
+  initializer_range: 0.02
+  scale_residual_projections: true
+
+data:
+  train_bin: data/processed/pretrain50b_32k_tokens.bin
+  meta: data/processed/pretrain50b_32k_tokens_meta.json
+  tokenizer_dir: tokenizer
+
+# Deliberately no init_checkpoint: pretraining starts from random initialization.
+checkpoint_path: checkpoints/tlgm_1b_32k_pretrain50b.pth
+log_path: outputs/tlgm_1b_32k_pretrain50b_loss.jsonl
+tensorboard_dir: outputs/tensorboard_pretrain50b
+
+validation:
+  enabled: true
+  holdout_samples: 10000
+  eval_steps: 1000
+  eval_batches: 8
+
+training:
+  device: cuda
+  dtype: bfloat16
+  batch_size: 8
+  gradient_accumulation_steps: 8
+  learning_rate: 0.00015
+  weight_decay: 0.1
+  max_steps: 762940
+  warmup_steps: 5000
+  save_steps: 500
+  grad_clip: 1.0
+  num_workers: 0
+  seed: 32001
+  checkpoint_model_dtype: bfloat16
+  max_consecutive_invalid_steps: 10

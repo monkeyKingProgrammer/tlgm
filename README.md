@@ -20,16 +20,17 @@ The models can generate English text and answer simple prompts, but they remain
 weak in factual reliability, complex reasoning, coding, safety, and long
 conversations.
 
-## Released Model Family
+## Model Family
 
-| Track | Parameters | Context | Blocks | Pretraining | Recommended final checkpoint |
+| Track | Parameters | Vocabulary | Context | Pretraining | Status |
 |---|---:|---:|---:|---:|---|
-| TLGM-120M | ~118.1M | 256 | 22 | 2B tokens | `tlgm_120m_sft_polished.pth` |
-| TLGM-120M-1024 | ~121.0M | 1,024 | 16 | 2B + 3B continued tokens | `tlgm_120m_1024ctx_sft_polished.pth` |
-| TLGM-1B-1024 | 1,015,592,960 | 1,024 | 27 | 20B tokens | `tlgm_1b_1024ctx_sft_reasoning_3day.pth` |
-| MiniMind baseline | ~122M | 960 | Transformer | 2B tokens | comparison only |
+| TLGM-120M | ~118.1M | 8,192 | 256 | 2B tokens | Trained |
+| TLGM-120M-1024 | ~121.0M | 8,192 | 1,024 | 2B + 3B continued tokens | Trained |
+| TLGM-1B-1024 | 1,015,592,960 | 8,192 | 1,024 | 20B tokens | Trained |
+| TLGM-1B-32K | 1,064,351,744 | 32,000 | 1,024 | 50B planned tokens | **Prepared, untrained** |
+| MiniMind baseline | ~122M | 6,400 | 960 | 2B tokens | Comparison only |
 
-The Git repository contains source, tokenizer files, data builders, configs,
+The Git repository contains source, available tokenizer files, data builders, configs,
 tests, launchers, loss histories, reports, and benchmark results. Large model
 weights are distributed through versioned GitHub Releases rather than normal
 Git history. See [WEIGHTS.md](WEIGHTS.md).
@@ -69,7 +70,7 @@ attention, `A[n,j]` depends on source and destination positions rather than
 the token content. This makes the design simple and inspectable, but removes
 content-dependent routing.
 
-The 1B model uses:
+The completed 8K-vocabulary 1B model uses:
 
 ```yaml
 vocab_size: 8192
@@ -93,6 +94,11 @@ Exact 1B parameter allocation:
 | Final normalization | 4,096 |
 | **Total** | **1,015,592,960** |
 
+The prepared 32K-vocabulary track keeps the same context, width, and 27-block
+architecture. Its larger tied token embedding adds 48,758,784 parameters for
+an exact total of 1,064,351,744. It has no tokenizer, data, or checkpoint yet;
+all are generated from scratch when its pipeline is started.
+
 The complete equations, initialization, parameter derivation, training
 semantics, and inference behavior are documented in
 [ARCHITECTURE_AUDIT.md](reports/1b/ARCHITECTURE_AUDIT.md).
@@ -103,6 +109,7 @@ semantics, and inference behavior are documented in
 models/tlgm-120m/              256-context architecture and pipeline
 models/tlgm-120m-1024ctx/      1024-context 120M architecture and pipeline
 models/tlgm-1b-1024ctx/        complete 1B architecture and pipeline
+models/tlgm-1b-32k-vocab-1024ctx/ planned 32K-vocabulary, 50B-token pipeline
 baselines/minimind-120m/       separately trained Transformer baseline tooling
 reports/1b/                    paper, audits, benchmark plan, proposals
 reports/benchmarks/            final practical and perplexity results
@@ -115,7 +122,7 @@ WEIGHTS.md                     checkpoint and release-asset policy
 
 ## Data
 
-The tokenizer is an 8,192-entry byte-level BPE trained from scratch. Special
+The trained TLGM tracks use an 8,192-entry byte-level BPE trained from scratch. Special
 IDs are `<pad>=0`, `<bos>=1`, `<eos>=2`, and `<unk>=3`.
 
 The TLGM-1B 20B-token pretraining stream contains:
@@ -131,6 +138,13 @@ The data itself is not redistributed in this repository. Builders stream the
 upstream datasets and create resumable `uint16` token binaries locally. Users
 must review and comply with every upstream dataset license and terms. Full
 lineage and preparation commands are in [DATASETS.md](DATASETS.md).
+
+The untrained 32K track will train a new 32,000-entry byte-level BPE from a 4GB
+mixed-source sample, then build a 50B-token corpus containing 35% deduplicated
+FineWeb-Edu, 25% Cosmopedia v2, 17% general FineWeb, 15% OpenWebMath, and 8%
+English Wikipedia. Its exact budget, data card, runtime estimate, commands, and
+expected performance are documented in
+[its project README](models/tlgm-1b-32k-vocab-1024ctx/README.md).
 
 ## Installation
 
