@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this software or research models, please cite it using the metadata from this file."
+type: software
+authors:
+  - name: "monkeyKingProgrammer"
+title: "TLGM: Token-Local Global-Mixing Language Models"
+abstract: "TLGM is an experimental autoregressive language-model family that replaces self-attention with learned causal lower-triangular sequence mixers without Transformer attention, QKV projections, Mamba, LSTM, or GRU layers."
+date-released: 2026-08-17
+repository-code: "https://github.com/monkeyKingProgrammer/tlgm"
+license: Apache-2.0
+keywords:
+  - "language-model"
+  - "causal-mixer"
+  - "deep-learning"
+  - "machine-learning"
+  - "natural-language-processing"
+  - "attention-free"

@@ -47,7 +47,7 @@ Preparation:
 ```bash
 cd models/tlgm-1b-1024ctx
 python3 scripts/prepare_pretrain20b_tokens.py
-python3 scripts/validate_pretrain20b.py
+python3 scripts/validate_pretrain_data.py
 ```
 
 The builder supports interrupted download/tokenization recovery through a

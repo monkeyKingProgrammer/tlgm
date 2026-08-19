@@ -1,5 +1,8 @@
 # TLGM: Token-Local Global-Mixing Language Models
 
+[![DOI](https://zenodo.org/badge/1337747696.svg)](https://zenodo.org/badge/latestdoi/1337747696)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 TLGM is an experimental autoregressive language-model family that replaces
 self-attention with learned causal lower-triangular sequence mixers. It does
 not use Transformer attention, QKV projections, pretrained Transformer
@@ -201,7 +204,7 @@ Prepare the 20B-token stream:
 ```bash
 cd models/tlgm-1b-1024ctx
 python3 scripts/prepare_pretrain20b_tokens.py
-python3 scripts/validate_pretrain20b.py
+python3 scripts/validate_pretrain_data.py
 ```
 
 Run the complete pretraining and post-training chain:
@@ -319,6 +322,19 @@ gradients, activations, and optimizer moments requires much more memory.
 
 Do not use these models as authoritative sources or for high-stakes medical,
 legal, financial, safety, or security decisions.
+
+## Citation
+
+If you use TLGM in your research, models, or evaluations, please cite it as:
+
+```bibtex
+@software{tlgm2026,
+  title  = {TLGM: Token-Local Global-Mixing Language Models},
+  author = {monkeyKingProgrammer},
+  year   = {2026},
+  url    = {https://github.com/monkeyKingProgrammer/tlgm}
+}
+```
 
 ## License
 
