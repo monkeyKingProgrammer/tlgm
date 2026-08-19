@@ -6,9 +6,10 @@ authors:
 title: "TLGM: Token-Local Global-Mixing Language Models"
 abstract: "TLGM is an experimental autoregressive language-model family that replaces self-attention with learned causal lower-triangular sequence mixers without Transformer attention, QKV projections, Mamba, LSTM, or GRU layers."
 date-released: 2026-08-17
+doi: "10.5281/zenodo.22004516"
 repository-code: "https://github.com/monkeyKingProgrammer/tlgm"
 license: Apache-2.0
-keywords:
+ieywords:
   - "language-model"
   - "causal-mixer"
   - "deep-learning"

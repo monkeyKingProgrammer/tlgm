@@ -1,6 +1,6 @@
 # TLGM: Token-Local Global-Mixing Language Models
 
-[![DOI](https://zenodo.org/badge/1337747696.svg)](https://zenodo.org/badge/latestdoi/1337747696)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22004515.svg)](https://doi.org/10.5281/zenodo.22004515)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 TLGM is an experimental autoregressive language-model family that replaces
@@ -332,7 +332,8 @@ If you use TLGM in your research, models, or evaluations, please cite it as:
   title  = {TLGM: Token-Local Global-Mixing Language Models},
   author = {monkeyKingProgrammer},
   year   = {2026},
-  url    = {https://github.com/monkeyKingProgrammer/tlgm}
+  doi    = {10.5281/zenodo.22004516},
+  url    = {https://doi.org/10.5281/zenodo.22004516}
 }
 ```
 
