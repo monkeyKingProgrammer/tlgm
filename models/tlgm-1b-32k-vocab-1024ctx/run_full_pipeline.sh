@@ -7,6 +7,12 @@ if [ -d "$HOME/venvs/tlgm" ]; then
   source "$HOME/venvs/tlgm/bin/activate"
 fi
 
+# Avoid interrupted Xet shard responses corrupting a resumable data build.
+# The token progress file allows the builder to continue from its last flush.
+export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
+export HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}"
+export HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-120}"
+
 TARGET_TOKENS=50000000000
 mkdir -p tokenizer data/raw data/processed data/benchmarks_full checkpoints outputs
 
